@@ -1,0 +1,25 @@
+node_modules/
+test-results/
+playwright-report/
+e2e/.data/
+web/dist/
+web/.env.local
+.env.local
+.env.*
+!.env.example
+
+# Compiled / built artifacts
+server/server
+giftlstr-rebuilt
+
+# Built frontend assets embedded by the Go server (regenerated at build time
+# from web/dist/ by scripts/e2e-server.sh and the Dockerfile).
+server/static/
+!server/static/.gitkeep
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3

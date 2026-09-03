@@ -1,0 +1,34 @@
+services:
+  giftlstr:
+    build:
+      context: .
+      args:
+        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
+    user: "10001:20000"
+    entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
+    ports:
+      - "8080:8080"
+    environment:
+      - DATA_DIR=/data
+      # Clerk credentials from https://dashboard.clerk.com (API keys page)
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY}
+      # Clerk user IDs (comma-separated) granted admin. Required to bootstrap
+      # the first admin; changes apply on the listed users' next request.
+      # Bootstrap admin: set to your Clerk user ID once known. Empty is
+      # allowed temporarily so the app can start for the first login.
+      - ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
+      # Automatic backups (see README). Backups are written to <data>/daily and
+      # <data>/weekly. Disabled by default.
+      - GIFT_AUTO_BACKUP_ENABLED=${GIFT_AUTO_BACKUP_ENABLED:-0}
+      - GIFT_AUTO_BACKUP_INTERVAL=${GIFT_AUTO_BACKUP_INTERVAL:-24h}
+      - GIFT_AUTO_BACKUP_KEEP_DAILY=${GIFT_AUTO_BACKUP_KEEP_DAILY:-7}
+      - GIFT_AUTO_BACKUP_KEEP_WEEKLY=${GIFT_AUTO_BACKUP_KEEP_WEEKLY:-4}
+      - GIFT_BACKUP_DIR=${GIFT_BACKUP_DIR:-}
+      # Per-IP rate limiting (disabled by default; see README).
+      - GIFT_RATE_LIMIT_ENABLED=${GIFT_RATE_LIMIT_ENABLED:-0}
+      - GIFT_RATE_LIMIT=${GIFT_RATE_LIMIT:-120}
+      - GIFT_RATE_LIMIT_STRICT=${GIFT_RATE_LIMIT_STRICT:-30}
+      - GIFT_RATE_LIMIT_WINDOW=${GIFT_RATE_LIMIT_WINDOW:-1m}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

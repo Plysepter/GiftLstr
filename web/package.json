@@ -1,0 +1,32 @@
+{
+	"name": "giftlstr-web",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@11.22.0",
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test": "vitest run",
+		"lint": "oxlint src",
+		"fmt": "oxfmt --write src",
+		"fmt:check": "oxfmt --check src"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "^7.3.0",
+		"@testing-library/svelte": "^5.4.2",
+		"jsdom": "^30.0.1",
+		"oxfmt": "^0.64.0",
+		"oxlint": "^1.79.0",
+		"svelte": "^5.56.10",
+		"svelte-check": "^4.7.6",
+		"temporal-polyfill": "^1.0.4",
+		"typescript": "^6.0.3",
+		"vite": "^8.2.2",
+		"vitest": "^4.1.11"
+	},
+	"dependencies": {
+		"@clerk/clerk-js": "^6.30.2"
+	}
+}

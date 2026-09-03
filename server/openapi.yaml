@@ -1,0 +1,797 @@
+openapi: 3.0.3
+info:
+  title: GiftLstr API
+  description: >
+    Backend API for the GiftLstr app. All endpoints require authentication
+    with a valid Clerk session token (Google OAuth), sent either as a Bearer
+    token in the Authorization header or via the __session cookie set by Clerk.
+  version: 1.0.0
+
+servers:
+  - url: /
+
+security:
+  - clerkSession: []
+
+components:
+  securitySchemes:
+    clerkSession:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Clerk session JWT (also accepted via the __session cookie).
+
+  parameters:
+    page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    pathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        description: UUID id (user or item, depending on the endpoint).
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    Ok:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required: [ok]
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        username:
+          type: string
+        displayName:
+          type: string
+        isAdmin:
+          type: boolean
+        birthday:
+          type: string
+          description: Reset date for the birthday list, formatted MM-DD.
+        themeStyle:
+          type: string
+          description: Active theme, defaults to "kinetic".
+        shareCode:
+          type: string
+          description: Code others can use to connect; empty when sharing is disabled.
+        isNew:
+          type: boolean
+          description: True right after account creation (drives the first-run birthday prompt).
+      required: [id, username, displayName, isAdmin, birthday]
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        title:
+          type: string
+        url:
+          type: string
+        notes:
+          type: string
+        removedAt:
+          type: string
+          nullable: true
+        claimed:
+          type: boolean
+        claimedByMe:
+          type: boolean
+        claimedByName:
+          type: string
+          description: >
+            Only present where exposing the claimer is allowed (own list and
+            archived lists).
+      required: [id, title, url, notes, removedAt, claimed, claimedByMe]
+    ListUser:
+      type: object
+      description: Owner of a user list (subset of User).
+      properties:
+        id:
+          type: string
+          description: UUID.
+        username:
+          type: string
+        displayName:
+          type: string
+      required: [id, username, displayName]
+    UserListResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/ListUser'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        isOwner:
+          type: boolean
+      required: [user, items, isOwner]
+    ListsPageUser:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        displayName:
+          type: string
+        username:
+          type: string
+        birthday:
+          type: string
+          description: Birthday MM-DD.
+        myClaims:
+          type: integer
+          description: Number of items the current user has claimed on this user's active list.
+        connected:
+          type: boolean
+        canView:
+          type: boolean
+        claimedLabel:
+          type: string
+          description: 'e.g. "claimed 2 items", empty when nothing is claimed.'
+      required: [id, displayName, username, birthday, myClaims, connected, canView, claimedLabel]
+    ListsPageResponse:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListsPageUser'
+        page:
+          type: integer
+        hasMore:
+          type: boolean
+        total:
+          type: integer
+      required: [users, page, hasMore, total]
+    ArchiveListSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        label:
+          type: string
+          description: 'The reset date that triggered the archive, e.g. "2026-07-01".'
+        archivedAt:
+          type: string
+        itemCount:
+          type: integer
+        claimedCount:
+          type: integer
+      required: [id, label, archivedAt, itemCount, claimedCount]
+    ArchiveIndexResponse:
+      type: object
+      properties:
+        lists:
+          type: array
+          items:
+            $ref: '#/components/schemas/ArchiveListSummary'
+        page:
+          type: integer
+        hasMore:
+          type: boolean
+        total:
+          type: integer
+      required: [lists, page, hasMore, total]
+    ArchiveDetailResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        label:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+      required: [id, label, items]
+    AdminUser:
+      type: object
+      properties:
+        id:
+          type: string
+          description: UUID.
+        username:
+          type: string
+        displayName:
+          type: string
+        isAdmin:
+          type: boolean
+        birthday:
+          type: string
+        itemCount:
+          type: integer
+          description: Items on the user's active list (excluding removed).
+        claimedCount:
+          type: integer
+          description: Claims held on the user's active list.
+        connections:
+          type: array
+          items:
+            type: string
+          description: Outgoing connection user ids (UUIDs).
+        connectedBy:
+          type: array
+          items:
+            type: string
+          description: Incoming connection user ids (UUIDs).
+      required: [id, username, displayName, isAdmin, birthday, itemCount, claimedCount, connections, connectedBy]
+    MeResponse:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        activeListId:
+          type: string
+          description: UUID of the user's active list.
+      required: [user, activeListId]
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid session token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: Not permitted to perform this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+paths:
+  /api/me:
+    get:
+      summary: Get the current user and their active list id
+      responses:
+        '200':
+          description: Current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/profile:
+    patch:
+      summary: Update profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                birthday:
+                  type: string
+                  description: MM-DD reset date.
+              required: [birthday]
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          description: Invalid birthday format.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/lists:
+    get:
+      summary: List all users' lists (paginated)
+      parameters:
+        - $ref: '#/components/parameters/page'
+      responses:
+        '200':
+          description: Paginated list of users with claim info.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListsPageResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/users/{id}/list:
+    get:
+      summary: Get a user's active list
+      description: Requires a connection to the user (or admin). Claimer names are only exposed on your own list; claims by others appear as generic "claimed".
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: The active list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/my/items:
+    post:
+      summary: Add an item to your own list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                url:
+                  type: string
+                notes:
+                  type: string
+              required: [title]
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: UUID.
+                required: [id]
+        '400':
+          description: 'Title required, or the list is full (max 200 items).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/my/items/{id}:
+    patch:
+      summary: Edit an item on your own list
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                url:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Item not found on your list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: Soft-delete an item from your own list
+      description: Claimers still see the item, marked as removed.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Item not found on your list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/my/items/order:
+    put:
+      summary: Reorder the items on your own list
+      description: >
+        Assigns sequential sort orders (array position) to the given item ids.
+        Every id must belong to the caller's active list.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                ids:
+                  type: array
+                  items:
+                    type: string
+                  description: All active item ids (UUIDs) in their new display order.
+              required: [ids]
+      responses:
+        '200':
+          description: Reordered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: An id was not found on your active list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/my/items/{id}/restore:
+    post:
+      summary: Restore a soft-deleted item on your own list
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Restored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Removed item not found on your active list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/items/{id}/claim:
+    put:
+      summary: Claim an item on another user's list
+      description: Prevents duplicate purchases. Idempotent when you already hold the claim.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Claimed (or already claimed by you).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cannot claim this item (not connected, own item, or inactive list).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Already claimed by someone else.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: Release your claim on an item
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Unclaimed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: You have not claimed this item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/connect/share:
+    put:
+      summary: Enable or disable share-code connections for the current user
+      description: >
+        Enabling generates a fresh unique share code and returns it; disabling
+        deletes the code so nobody can connect with it again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled:
+                  type: boolean
+              required: [enabled]
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shareCode:
+                    type: string
+                    description: The new share code, empty when disabled.
+                required: [shareCode]
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/connect/accept:
+    post:
+      summary: Connect to the user owning the given share code
+      description: >
+        Creates a bidirectional connection between the caller and the user that
+        owns the code. Cannot connect to yourself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code:
+                  type: string
+                  description: The 8-character share code of the target user.
+              required: [code]
+      responses:
+        '200':
+          description: Connected.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  displayName:
+                    type: string
+                    description: Display name of the user you connected with.
+                required: [ok]
+        '400':
+          description: 'Missing/invalid code, or you tried to use your own code.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user found with that share code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/archive:
+    get:
+      summary: List your archived lists (paginated)
+      parameters:
+        - $ref: '#/components/parameters/page'
+      responses:
+        '200':
+          description: Archived lists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveIndexResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/archive/{id}:
+    get:
+      summary: Read-only view of an archived list, showing who claimed what
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Archived list detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArchiveDetailResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Archive not found (or not yours).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/admin/users:
+    get:
+      summary: List all users with their connections (admin only)
+      parameters:
+        - $ref: '#/components/parameters/page'
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Search filter on displayName or username.
+      responses:
+        '200':
+          description: Users (paginated, 25 per page).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AdminUser'
+                  page:
+                    type: integer
+                  hasMore:
+                    type: boolean
+                  total:
+                    type: integer
+                required: [users, page, hasMore, total]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/users/{id}:
+    patch:
+      summary: Update a user's birthday or admin flag (admin only)
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                birthday:
+                  type: string
+                isAdmin:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      summary: Delete a user and all their data (admin only)
+      description: Permanently removes the user, their lists, items, claims and connections. Cannot delete yourself or the last admin.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          description: Cannot delete yourself or the last admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/connections:
+    put:
+      summary: Add or remove the connection between two users (admin only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                a:
+                  type: string
+                  description: UUID.
+                b:
+                  type: string
+                  description: UUID.
+                add:
+                  type: boolean
+                bidirectional:
+                  type: boolean
+                  default: true
+                  description: When adding, also create the reverse connection.
+              required: [a, b, add]
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '400':
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
