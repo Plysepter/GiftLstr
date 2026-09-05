@@ -21,6 +21,9 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// logInfo writes regular (non-error) logs to stdout.
+var logInfo = log.New(os.Stdout, "", log.LstdFlags)
+
 // newID returns a fresh UUID suitable for use as a users/lists/items key.
 func newID() string {
 	return uuid.NewString()
@@ -119,7 +122,7 @@ func main() {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-	log.Printf("listening on %s", addr)
+	logInfo.Printf("listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -189,7 +192,7 @@ func migrateUUID() {
 	if columnType("users", "id") != "INTEGER" {
 		return
 	}
-	log.Println("migrating integer ids to UUIDs")
+	logInfo.Println("migrating integer ids to UUIDs")
 	// The _uuid child tables carry FOREIGN KEY clauses that, until the old
 	// integer tables are renamed away, still point at the INTEGER parents. We
 	// rebuild every table in lockstep here, so referential integrity is
@@ -202,7 +205,7 @@ func migrateUUID() {
 		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
 			log.Fatalf("uuid migration: %v", err)
 		}
-		log.Println("uuid migration complete")
+		logInfo.Println("uuid migration complete")
 	}()
 	tx, err := db.Begin()
 	if err != nil {
@@ -398,7 +401,7 @@ func logMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
+		logInfo.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
 }
 

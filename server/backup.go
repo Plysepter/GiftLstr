@@ -120,7 +120,7 @@ func runBackup(cfg backupConfig, now time.Time) error {
 	if err := backupDB(context.Background(), path); err != nil {
 		return err
 	}
-	log.Printf("backup written: %s", path)
+	logInfo.Printf("backup written: %s", path)
 
 	if err := pruneBackups(cfg, now); err != nil {
 		log.Printf("backup prune: %v", err)
