@@ -2,20 +2,34 @@ services:
   giftlstr:
     build:
       context: .
-      args:
-        VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY}
     user: "10001:20000"
     entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
     ports:
       - "8080:8080"
+    # Lets the server reach Authentik via host.docker.internal if you prefer
+    # that route (set AUTHENTIK_ISSUER_BACKEND accordingly).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DATA_DIR=/data
-      # Clerk credentials from https://dashboard.clerk.com (API keys page)
-      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY:?set CLERK_SECRET_KEY}
-      # Clerk user IDs (comma-separated) granted admin. Required to bootstrap
-      # the first admin; changes apply on the listed users' next request.
-      # Bootstrap admin: set to your Clerk user ID once known. Empty is
-      # allowed temporarily so the app can start for the first login.
+      # Authentik OIDC credentials (see README). The issuer is the public URL
+      # browsers hit (e.g. https://auth.example.com/application/o/giftlstr/)
+      # and is what the app validates the token's `iss` claim against.
+      - AUTHENTIK_ISSUER=${AUTHENTIK_ISSUER:-http://localhost:9000/application/o/giftlstr/}
+      # Where the server fetches discovery/JWKS/token from. Defaults to the
+      # compose-internal `server` DNS name since Authentik and GiftLstr share
+      # the same network (the browser never sees this address). Only needs a
+      # different value when Authentik runs elsewhere.
+      - AUTHENTIK_ISSUER_BACKEND=${AUTHENTIK_ISSUER_BACKEND:-http://server:9000/application/o/giftlstr/}
+      # Leave empty to boot in "sign-in not configured" mode; fill after
+      # creating the OIDC provider in Authentik (see README).
+      - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-}
+      # Authentik user attribute (or mapped OIDC claim) carrying the MM-DD
+      # birthday, used to set the birthday list reset on first login.
+      - AUTHENTIK_BIRTHDAY_CLAIM=${AUTHENTIK_BIRTHDAY_CLAIM:-birthday}
+      # Authentik subjects (UUIDs, comma-separated) granted admin. Required to
+      # bootstrap the first admin; changes apply on the listed users' next
+      # request. Empty is allowed so the app can start for the first login.
       - ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
       # Automatic backups (see README). Backups are written to <data>/daily and
       # <data>/weekly. Disabled by default.
@@ -32,3 +46,80 @@ services:
     volumes:
       - ./data:/data
     restart: unless-stopped
+
+  postgresql:
+    image: docker.io/library/postgres:16-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - authentik-postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
+      POSTGRES_USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
+      # Dev-default only; generate a real password with `pnpm docker:genenv`
+      # (or set AUTHENTIK_POSTGRESQL__PASSWORD) before exposing this stack.
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
+
+  redis:
+    image: docker.io/library/redis:alpine
+    restart: unless-stopped
+    command: --save 60 1 --loglevel warning
+    volumes:
+      - authentik-redis:/data
+
+  server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
+    restart: unless-stopped
+    command: server
+    ports:
+      - "9000:9000"
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-geoip:/geoip
+    environment: &authentik-env
+      # Dev-default only (public value). Generate a real one with
+      # `pnpm docker:genenv` (or set AUTHENTIK_SECRET_KEY) for any deployment
+      # you can't fully trust; it must stay stable across restarts.
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-dev-only-insecure-secret-key-change-before-production}
+      # Bootstrap account created on first boot. Sign in once with it, create
+      # the OIDC provider, then set AUTHENTIK_BOOTSTRAP_TOKEN to empty.
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-giftlstr-bootstrap}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@example.com}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-authentik}
+      AUTHENTIK_POSTGRESQL__HOST: postgresql
+      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
+      AUTHENTIK_REDIS__HOST: redis
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
+    restart: unless-stopped
+    command: worker
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-geoip:/geoip
+    environment: *authentik-env
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  authentik-postgres: {}
+  authentik-redis: {}
+  authentik-media: {}
+  authentik-templates: {}
+  authentik-geoip: {}

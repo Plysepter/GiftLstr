@@ -53,6 +53,12 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/users/{id}/list", rl.rateLimit(auth(handleUserList)))
 	mux.HandleFunc("GET /api/metadata", rl.rateLimitStrict(auth(handleMetadata)))
 
+	// OIDC proxy: lets the SPA reach Authentik's discovery + token endpoints
+	// through the app's own origin (no CORS handling in Authentik needed).
+	// Not auth-protected: they're the public OIDC endpoints, rate-limited only.
+	mux.HandleFunc("GET /api/oidc/discovery", rl.rateLimit(handleOIDCDiscovery))
+	mux.HandleFunc("POST /api/oidc/token", rl.rateLimit(handleOIDCToken))
+
 	mux.HandleFunc("POST /api/my/items", rl.rateLimit(auth(handleAddItem)))
 	mux.HandleFunc("PATCH /api/my/items/{id}", rl.rateLimit(auth(handleEditItem)))
 	mux.HandleFunc("DELETE /api/my/items/{id}", rl.rateLimit(auth(handleRemoveItem)))
@@ -80,7 +86,7 @@ func registerAPI(mux *http.ServeMux) {
 }
 
 func e2eTestMode() bool {
-	return os.Getenv("E2E_TEST_MODE") == "1" && os.Getenv("CLERK_SECRET_KEY") == ""
+	return os.Getenv("E2E_TEST_MODE") == "1" && os.Getenv("AUTHENTIK_ISSUER") == ""
 }
 
 // handleE2EArchive force-runs the archive/reset flow for the current user as if
@@ -124,7 +130,7 @@ func handleE2EArchive(w http.ResponseWriter, r *http.Request) {
 }
 
 // currentUserFn resolves the authenticated user for a request; overridable in
-// tests to bypass Clerk verification.
+// tests to bypass identity-provider verification.
 var currentUserFn = currentUser
 
 func auth(next http.HandlerFunc) http.HandlerFunc {

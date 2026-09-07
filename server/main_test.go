@@ -2,21 +2,93 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
-	"path/filepath"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/clerk/clerk-sdk-go/v2"
-	"github.com/google/uuid"
 )
 
 func TestParseMMDD(t *testing.T) {
 	d := parseMMDD("12-25", 2026)
 	if d.Year() != 2026 || d.Month() != time.December || d.Day() != 25 {
 		t.Errorf("parseMMDD = %v", d)
+	}
+}
+
+// makeAuthedRequest builds a request carrying the given bearer token, as the
+// auth middleware receives them.
+func makeAuthedRequest(token string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	return req
+}
+
+func TestSetAuthConfig(t *testing.T) {
+	html := "<!doctype html><script>theme</script><script type=\"module\" src=\"/src/main.ts\"></script>"
+	out := setAuthConfig(html, "https://auth.example.com/application/o/giftlstr/", "client-1")
+
+	if !strings.Contains(out, `window.__GIFTLSTR__ = { authIssuer: "https://auth.example.com/application/o/giftlstr/", authClientId: "client-1" }`) {
+		t.Errorf("config missing from output: %s", out)
+	}
+	// The config script lands before the module bundle so the value is
+	// defined by the time the app module reads it.
+	if !strings.Contains(out, `</script><script type="module"`) {
+		t.Errorf("config script not inserted before the module script: %s", out)
+	}
+	if !strings.Contains(out, `src="/src/main.ts"`) {
+		t.Errorf("module script must be preserved: %s", out)
+	}
+	if strings.Count(out, `window.__GIFTLSTR__`) != 1 {
+		t.Errorf("config must appear exactly once: %s", out)
+	}
+}
+
+func TestSetAuthConfigReplacesPreviousValue(t *testing.T) {
+	html := `<script>window.__GIFTLSTR__ = { legacyAuthConfig: "pk_old_baked_in" };</script>` +
+		`<script type="module" src="/src/main.ts"></script>`
+	out := setAuthConfig(html, "https://auth.example.com/application/o/giftlstr/", "client-2")
+
+	if strings.Contains(out, "pk_old_baked_in") {
+		t.Errorf("previous config was not removed: %s", out)
+	}
+	if !strings.Contains(out, `authIssuer: "https://auth.example.com/application/o/giftlstr/"`) {
+		t.Errorf("runtime issuer not substituted: %s", out)
+	}
+	if strings.Count(out, `window.__GIFTLSTR__`) != 1 {
+		t.Errorf("config must appear exactly once after replacement: %s", out)
+	}
+}
+
+func TestSetAuthConfigEscapesValues(t *testing.T) {
+	out := setAuthConfig(`<script type="module" src="/src/main.ts"></script>`, `a"b\c<div>`, "x&y")
+	if !strings.Contains(out, `authIssuer: "a\"b\\c\u003cdiv\u003e"`) {
+		t.Errorf("issuer not escaped for inlining: %s", out)
+	}
+	if !strings.Contains(out, `authClientId: "x\u0026y"`) {
+		t.Errorf("client id not escaped for inlining: %s", out)
+	}
+}
+
+func TestContentSecurityPolicyHashesInlineScripts(t *testing.T) {
+	theme := `<script>var t = "theme";</script>`
+	config := `<script>window.__GIFTLSTR__ = { authIssuer: "https://auth.example.com/" };</script>`
+	csp := contentSecurityPolicy(scriptHash(theme), scriptHash(config))
+
+	if !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("missing default-src: %s", csp)
+	}
+	for _, src := range []string{"'sha256-" + scriptHash(theme) + "'", "'sha256-" + scriptHash(config) + "'", "frame-ancestors 'none'", "object-src 'none'"} {
+		if !strings.Contains(csp, src) {
+			t.Errorf("CSP missing %s: %s", src, csp)
+		}
+	}
+	if strings.Contains(csp, "'unsafe-inline' script") || strings.Count(csp, "'unsafe-inline'") != 1 {
+		t.Errorf("script-src must not be unsafe-inline: %s", csp)
+	}
+	if scriptHash(`<script>var x = 1;</script>`) == scriptHash(`<script>var x = 2;</script>`) {
+		t.Error("script hashes must differ for different contents")
 	}
 }
 
@@ -224,22 +296,12 @@ func TestClaimConflictReturns409(t *testing.T) {
 }
 
 func TestProvisionUserIdempotent(t *testing.T) {
-	orig := clerkUser
-	defer func() { clerkUser = orig }()
-	clerkUser = func(_ context.Context, id string) (*clerk.User, error) {
-		name := "Provisioned User"
-		return &clerk.User{
-			ID:        id,
-			FirstName: &name,
-		}, nil
-	}
-
-	const clerkID = "c_provision_dup"
-	first, err := provisionUser(clerkID)
+	id := &Identity{Subject: "c_provision_dup", Username: "provisioned", DisplayName: "Provisioned User"}
+	first, err := provisionUser(id)
 	if err != nil {
 		t.Fatalf("first provision: %v", err)
 	}
-	second, err := provisionUser(clerkID)
+	second, err := provisionUser(id)
 	if err != nil {
 		t.Fatalf("second provision: %v", err)
 	}
@@ -254,24 +316,13 @@ func TestProvisionUserIdempotent(t *testing.T) {
 		t.Errorf("user has %d lists; want exactly 1 active list", lists)
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE clerk_user_id = ?`, clerkID).Scan(&count); err != nil || count != 1 {
-		t.Errorf("user rows for clerk id = %d, want 1 (err=%v)", count, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE auth_user_id = ?`, id.Subject).Scan(&count); err != nil || count != 1 {
+		t.Errorf("user rows for identity = %d, want 1 (err=%v)", count, err)
 	}
 }
 
 func TestProvisionUserReadsBirthdayFromMetadata(t *testing.T) {
-	orig := clerkUser
-	defer func() { clerkUser = orig }()
-	clerkUser = func(_ context.Context, id string) (*clerk.User, error) {
-		name := "Meta User"
-		return &clerk.User{
-			ID:             id,
-			FirstName:      &name,
-			PublicMetadata: json.RawMessage(`{"birthday":"04-21"}`),
-		}, nil
-	}
-
-	u, err := provisionUser("c_meta_user")
+	u, err := provisionUser(&Identity{Subject: "c_meta_user", Username: "meta", DisplayName: "Meta User", Birthday: "04-21"})
 	if err != nil {
 		t.Fatalf("provisionUser: %v", err)
 	}
@@ -286,16 +337,7 @@ func TestProvisionUserReadsBirthdayFromMetadata(t *testing.T) {
 		t.Errorf("stored birthday = %q, want 04-21", stored)
 	}
 
-	invalid := func(_ context.Context, id string) (*clerk.User, error) {
-		name := "Bad Meta"
-		return &clerk.User{
-			ID:             id,
-			FirstName:      &name,
-			PublicMetadata: json.RawMessage(`{"birthday":"not-a-date"}`),
-		}, nil
-	}
-	clerkUser = invalid
-	bad, err := provisionUser("c_badmeta_user")
+	bad, err := provisionUser(&Identity{Subject: "c_badmeta_user", Username: "badmeta", DisplayName: "Bad Meta", Birthday: "not-a-date"})
 	if err != nil {
 		t.Fatalf("provisionUser (invalid metadata): %v", err)
 	}
@@ -304,123 +346,36 @@ func TestProvisionUserReadsBirthdayFromMetadata(t *testing.T) {
 	}
 }
 
-// TestMigrateUUID verifies the integer→UUID migration rebuilds every table and
-// remaps foreign keys in lockstep.
-func TestMigrateUUID(t *testing.T) {
-	dir := t.TempDir()
-	mig, err := sql.Open("sqlite", filepath.Join(dir, "old.db"))
+// stubAuth lets tests drive provisioning with a fixed identity instead of a
+// real identity provider.
+type stubAuth struct{ ident *Identity }
+
+func (s stubAuth) VerifySession(ctx context.Context, _ string) (*Identity, error) {
+	return s.ident, nil
+}
+
+func TestCurrentUserProvisionsFromVerifiedIdentity(t *testing.T) {
+	orig := activeAuth
+	defer func() { activeAuth = orig }()
+	id := &Identity{Subject: "c_curuser", Username: "cur_user", DisplayName: "Cur User", Birthday: "06-15"}
+	activeAuth = stubAuth{ident: id}
+
+	r := makeAuthedRequest("some.token")
+	u, err := currentUser(r)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("currentUser: %v", err)
 	}
-	defer mig.Close()
-	oldSchema := `
-CREATE TABLE users (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	clerk_user_id TEXT NOT NULL UNIQUE,
-	username TEXT NOT NULL UNIQUE,
-	display_name TEXT NOT NULL,
-	is_admin INTEGER NOT NULL DEFAULT 0,
-	birthday TEXT NOT NULL DEFAULT '',
-	theme_style TEXT NOT NULL DEFAULT 'kinetic',
-	share_code TEXT NOT NULL DEFAULT '',
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE lists (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	label TEXT NOT NULL,
-	archived_at TEXT,
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE items (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-	title TEXT NOT NULL,
-	url TEXT NOT NULL DEFAULT '',
-	notes TEXT NOT NULL DEFAULT '',
-	sort_order INTEGER NOT NULL DEFAULT 0,
-	removed_at TEXT,
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE claims (
-	item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE TABLE connections (
-	user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	other_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	PRIMARY KEY (user_id, other_user_id)
-);
-`
-	if _, err := mig.Exec(oldSchema); err != nil {
-		t.Fatal(err)
-	}
-	// Seed an old-style graph: two connected users, one with an item the other claims.
-	if _, err := mig.Exec(`INSERT INTO users (clerk_user_id, username, display_name) VALUES ('m_a', 'a', 'A'), ('m_b', 'b', 'B')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mig.Exec(`INSERT INTO lists (user_id, label) VALUES (1, 'Active'), (2, 'Active')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mig.Exec(`INSERT INTO items (list_id, title) VALUES (1, 'present')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mig.Exec(`INSERT INTO claims (item_id, user_id) VALUES (1, 2)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := mig.Exec(`INSERT INTO connections (user_id, other_user_id) VALUES (1, 2), (2, 1)`); err != nil {
-		t.Fatal(err)
+	if u.Username != "cur_user" || u.DisplayName != "Cur User" || u.Birthday != "06-15" {
+		t.Errorf("provisioned user = %+v, want profile carried over from identity", u)
 	}
 
-	prev := db
-	db = mig
-	defer func() { db = prev }()
-
-	migrate()
-
-	// users were rebuilt with UUID keys.
-	var uidA string
-	if err := mig.QueryRow(`SELECT id FROM users WHERE clerk_user_id = 'm_a'`).Scan(&uidA); err != nil {
-		t.Fatalf("load migrated user: %v", err)
+	// A second request reuses the same local row.
+	r2 := makeAuthedRequest("some.token")
+	u2, err := currentUser(r2)
+	if err != nil {
+		t.Fatalf("second currentUser: %v", err)
 	}
-	if _, err := uuid.Parse(uidA); err != nil {
-		t.Fatalf("user id %q is not a UUID after migration", uidA)
-	}
-
-	// lists.user_id remapped to the new user uuid.
-	var listOwner string
-	if err := mig.QueryRow(`SELECT user_id FROM lists WHERE label = 'Active' ORDER BY rowid LIMIT 1`).Scan(&listOwner); err != nil {
-		t.Fatal(err)
-	}
-	if listOwner != uidA {
-		t.Errorf("lists.user_id = %q, want %q", listOwner, uidA)
-	}
-
-	// items/claims/connections remapped consistently.
-	var itemID, claimItem, claimUser string
-	if err := mig.QueryRow(`SELECT id FROM items WHERE title = 'present'`).Scan(&itemID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := uuid.Parse(itemID); err != nil {
-		t.Fatalf("item id %q is not a UUID", itemID)
-	}
-	if err := mig.QueryRow(`SELECT item_id, user_id FROM claims`).Scan(&claimItem, &claimUser); err != nil {
-		t.Fatal(err)
-	}
-	if claimItem != itemID {
-		t.Errorf("claim.item_id = %q, want %q", claimItem, itemID)
-	}
-	var uidB string
-	mig.QueryRow(`SELECT id FROM users WHERE clerk_user_id = 'm_b'`).Scan(&uidB)
-	if claimUser != uidB {
-		t.Errorf("claim.user_id = %q, want %q", claimUser, uidB)
-	}
-	var connA, connB string
-	if err := mig.QueryRow(`SELECT user_id, other_user_id FROM connections LIMIT 1`).Scan(&connA, &connB); err != nil {
-		t.Fatal(err)
-	}
-	if !((connA == uidA && connB == uidB) || (connA == uidB && connB == uidA)) {
-		t.Errorf("connection (%q, %q) does not link the migrated users", connA, connB)
+	if u2.ID != u.ID {
+		t.Errorf("second request provisioned a different user (%s vs %s)", u2.ID, u.ID)
 	}
 }

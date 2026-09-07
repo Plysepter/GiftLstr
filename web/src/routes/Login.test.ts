@@ -13,7 +13,7 @@ describe("Login centered card", () => {
     expect(card.style.margin).toContain("auto");
     expect(card.style.textAlign).toBe("center");
     expect(screen.getByText("GiftLstr")).toBeTruthy();
-    expect(screen.getByText(/Continue with Google/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
     cleanup();
   });
 });

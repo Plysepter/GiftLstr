@@ -15,7 +15,8 @@ export const MOCK_USERS: readonly string[] = Array.from({ length: 30 }, (_, i) =
 /**
  * Signs the browser in as the given e2e user. The token format is
  * `e2e:<username>:<display name>` and is understood by the server when
- * E2E_TEST_MODE=1; the frontend picks it up from localStorage and skips Clerk.
+ * E2E_TEST_MODE=1; the frontend picks it up from localStorage and skips the
+ * identity provider.
  */
 export async function login(page: Page, who: string): Promise<void> {
 	await page.addInitScript(

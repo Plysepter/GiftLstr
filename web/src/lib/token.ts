@@ -1,4 +1,4 @@
-// Holds the current Clerk session token getter so that api.ts does not
+// Holds the current OIDC session token getter so that api.ts does not
 // depend on auth.ts (which itself uses api.ts).
 let tokenGetter: (() => Promise<string | null>) | null = null;
 

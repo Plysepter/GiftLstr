@@ -6,9 +6,10 @@
 		"e2e": "playwright test",
 		"e2e:headed": "playwright test --headed",
 		"e2e:report": "playwright show-report",
-		"docker:up": "docker compose --project-name giftlstr --env-file .env.local up --build -d",
+		"docker:up": "sh scripts/init-authentik-env.sh && docker compose --project-name giftlstr --env-file .env.local up --build -d",
 		"docker:down": "docker compose --project-name giftlstr --env-file .env.local down",
-		"docker:logs": "docker compose logs -f"
+		"docker:logs": "docker compose logs -f",
+		"docker:genenv": "sh scripts/init-authentik-env.sh"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.58.0"

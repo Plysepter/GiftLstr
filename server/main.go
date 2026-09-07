@@ -2,20 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/clerk/clerk-sdk-go/v2"
-	"github.com/clerk/clerk-sdk-go/v2/jwks"
 	"github.com/google/uuid"
 
 	_ "modernc.org/sqlite"
@@ -40,7 +41,13 @@ var openapiSpec []byte
 
 var db *sql.DB
 
-var jwksClient *jwks.Client
+// indexHTML is the SPA shell with the runtime Authentik OIDC config baked in,
+// rendered once at startup. nil when the frontend wasn't embedded.
+var indexHTML []byte
+
+// indexCSP is the Content-Security-Policy header for the served SPA shell,
+// computed alongside indexHTML (it hashes the inline scripts it contains).
+var indexCSP string
 
 const maxBodyBytes = 1 << 20 // 1 MiB request body cap
 
@@ -53,21 +60,15 @@ func main() {
 		log.Fatalf("create data dir: %v", err)
 	}
 
-	secretKey := os.Getenv("CLERK_SECRET_KEY")
+	issuer := os.Getenv("AUTHENTIK_ISSUER")
 
-	if e2eTestMode() && secretKey != "" {
-		log.Fatal("E2E_TEST_MODE must not be enabled together with CLERK_SECRET_KEY (it would bypass authentication)")
+	if e2eTestMode() && issuer != "" {
+		log.Fatal("E2E_TEST_MODE must not be enabled together with AUTHENTIK_ISSUER (it would bypass authentication)")
 	}
 	if e2eTestMode() {
 		log.Print("WARNING: E2E_TEST_MODE is enabled; insecure test bearer tokens are accepted. Never enable in production.")
-	} else if secretKey == "" {
-		log.Fatal("CLERK_SECRET_KEY is required")
-	}
-	if !e2eTestMode() {
-		clerk.SetKey(secretKey)
-		config := &clerk.ClientConfig{}
-		config.Key = clerk.String(secretKey)
-		jwksClient = jwks.NewClient(config)
+	} else if issuer == "" {
+		log.Fatal("AUTHENTIK_ISSUER is required")
 	}
 
 	var err error
@@ -82,9 +83,17 @@ func main() {
 	if _, err := db.Exec(string(schema)); err != nil {
 		log.Fatalf("apply schema: %v", err)
 	}
-	migrate()
 	go archiveLoop()
 	go backupLoop(context.Background(), backupConfigFromEnv(dataDir))
+
+	// Render the SPA shell once at startup, overwriting any Authentik OIDC
+	// config that may have been baked into the build with the one from the
+	// runtime environment, so the image can be built without credentials.
+	if html, ok := renderIndex(); ok {
+		indexHTML = html
+	} else {
+		log.Print("static/index.html not embedded; SPA shell will not be served")
+	}
 
 	mux := http.NewServeMux()
 	registerAPI(mux)
@@ -103,6 +112,10 @@ func main() {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Write(b)
 	})
+	// The SPA shell (`/` and `/index.html`) is served from the indexHTML
+	// rendered at startup; FileServerFS covers the remaining static assets.
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { serveIndex(w) })
+	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) { serveIndex(w) })
 	mux.Handle("/", cacheStatic(http.FileServerFS(static)))
 	mux.HandleFunc("/app/", func(w http.ResponseWriter, r *http.Request) { serveIndex(w) })
 	// Endpoint Google returns to after SSO. The SPA reads the flow params on
@@ -124,238 +137,6 @@ func main() {
 	}
 	logInfo.Printf("listening on %s", addr)
 	log.Fatal(srv.ListenAndServe())
-}
-
-// columnExists reports whether a table has the given column.
-func columnExists(table, column string) bool {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == column {
-			return true
-		}
-	}
-	return false
-}
-
-// migrate applies incremental migrations for databases created before Clerk
-// integration (schema.sql only runs CREATE IF NOT EXISTS).
-func migrate() {
-	if !columnExists("users", "clerk_user_id") {
-		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN clerk_user_id TEXT`); err != nil {
-			log.Fatalf("migration: %v", err)
-		}
-	}
-	if !columnExists("users", "theme_style") {
-		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN theme_style TEXT NOT NULL DEFAULT 'kinetic'`); err != nil {
-			log.Fatalf("migration: %v", err)
-		}
-	}
-	if !columnExists("users", "share_code") {
-		if _, err := db.Exec(`ALTER TABLE users ADD COLUMN share_code TEXT NOT NULL DEFAULT ''`); err != nil {
-			log.Fatalf("migration: %v", err)
-		}
-	}
-	migrateUUID()
-}
-
-// columnType returns the declared type of a column, or "".
-func columnType(table, column string) string {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
-	if err != nil {
-		return ""
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var dflt any
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil && name == column {
-			return strings.ToUpper(typ)
-		}
-	}
-	return ""
-}
-
-// migrateUUID converts databases created with INTEGER primary keys to UUID
-// (TEXT) keys. Each source row gets a fresh UUID; foreign keys are remapped in
-// lockstep so claims/connections/lists keep pointing at the right rows.
-func migrateUUID() {
-	if columnType("users", "id") != "INTEGER" {
-		return
-	}
-	logInfo.Println("migrating integer ids to UUIDs")
-	// The _uuid child tables carry FOREIGN KEY clauses that, until the old
-	// integer tables are renamed away, still point at the INTEGER parents. We
-	// rebuild every table in lockstep here, so referential integrity is
-	// guaranteed by the remap maps; disable FK enforcement for the migration
-	// (and re-enable it right after) to avoid transient violations.
-	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	}
-	defer func() {
-		if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-			log.Fatalf("uuid migration: %v", err)
-		}
-		logInfo.Println("uuid migration complete")
-	}()
-	tx, err := db.Begin()
-	if err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	}
-	defer tx.Rollback()
-
-	for _, drop := range []string{`DROP TABLE IF EXISTS users_uuid`, `DROP TABLE IF EXISTS lists_uuid`, `DROP TABLE IF EXISTS items_uuid`, `DROP TABLE IF EXISTS claims_uuid`, `DROP TABLE IF EXISTS connections_uuid`} {
-		if _, err := tx.Exec(drop); err != nil {
-			log.Fatalf("uuid migration: %v", err)
-		}
-	}
-	creates := []string{
-		`CREATE TABLE users_uuid (
-			id TEXT PRIMARY KEY, clerk_user_id TEXT NOT NULL UNIQUE, username TEXT NOT NULL,
-			display_name TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, birthday TEXT NOT NULL DEFAULT '',
-			theme_style TEXT NOT NULL DEFAULT 'kinetic', share_code TEXT NOT NULL DEFAULT '',
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE lists_uuid (
-			id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			label TEXT NOT NULL, archived_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE items_uuid (
-			id TEXT PRIMARY KEY, list_id TEXT NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
-			title TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
-			sort_order INTEGER NOT NULL DEFAULT 0, removed_at TEXT,
-			created_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE claims_uuid (
-			item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
-		)`,
-		`CREATE TABLE connections_uuid (
-			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			other_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			PRIMARY KEY (user_id, other_user_id), CHECK (user_id <> other_user_id)
-		)`,
-	}
-	for _, c := range creates {
-		if _, err := tx.Exec(c); err != nil {
-			log.Fatalf("uuid migration: %v", err)
-		}
-	}
-
-	// users: oldID -> newUUID
-	userMap := map[int64]string{}
-	if rows, err := tx.Query(`SELECT id, clerk_user_id, username, display_name, is_admin, birthday, theme_style, share_code, created_at FROM users`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	} else {
-		for rows.Next() {
-			var id int64
-			var clerkID, username, displayName, birthday, theme, code, created string
-			var adm int
-			rows.Scan(&id, &clerkID, &username, &displayName, &adm, &birthday, &theme, &code, &created)
-			nid := newID()
-			userMap[id] = nid
-			if _, err := tx.Exec(`INSERT INTO users_uuid (id, clerk_user_id, username, display_name, is_admin, birthday, theme_style, share_code, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, nid, clerkID, username, displayName, adm, birthday, theme, code, created); err != nil {
-				log.Fatalf("uuid migration: %v", err)
-			}
-		}
-		rows.Close()
-	}
-
-	// lists: oldID -> newUUID, plus oldUserID -> new
-	listMap := map[int64]string{}
-	if rows, err := tx.Query(`SELECT id, user_id, label, archived_at, created_at FROM lists`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	} else {
-		for rows.Next() {
-			var id, owner int64
-			var label, archived, created string
-			rows.Scan(&id, &owner, &label, &archived, &created)
-			nid := newID()
-			listMap[id] = nid
-			if _, err := tx.Exec(`INSERT INTO lists_uuid (id, user_id, label, archived_at, created_at)
-				VALUES (?, ?, ?, ?, ?)`, nid, userMap[owner], label, archived, created); err != nil {
-				log.Fatalf("uuid migration: %v", err)
-			}
-		}
-		rows.Close()
-	}
-
-	// items: oldID -> newUUID (remaps list_id)
-	itemMap := map[int64]string{}
-	if rows, err := tx.Query(`SELECT id, list_id, title, url, notes, sort_order, created_at, removed_at FROM items`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	} else {
-		for rows.Next() {
-			var id, list int64
-			var title, url, notes string
-			var sort int
-			var created, removed string
-			rows.Scan(&id, &list, &title, &url, &notes, &sort, &created, &removed)
-			nid := newID()
-			itemMap[id] = nid
-			if _, err := tx.Exec(`INSERT INTO items_uuid (id, list_id, title, url, notes, sort_order, created_at, removed_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, nid, listMap[list], title, url, notes, sort, created, removed); err != nil {
-				log.Fatalf("uuid migration: %v", err)
-			}
-		}
-		rows.Close()
-	}
-
-	// claims remaps item_id and user_id
-	if rows, err := tx.Query(`SELECT item_id, user_id, claimed_at FROM claims`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	} else {
-		for rows.Next() {
-			var item, claimant int64
-			var claimed string
-			rows.Scan(&item, &claimant, &claimed)
-			if _, err := tx.Exec(`INSERT INTO claims_uuid (item_id, user_id, claimed_at) VALUES (?, ?, ?)`,
-				itemMap[item], userMap[claimant], claimed); err != nil {
-				log.Fatalf("uuid migration: %v", err)
-			}
-		}
-		rows.Close()
-	}
-
-	// connections remap both sides
-	if rows, err := tx.Query(`SELECT user_id, other_user_id FROM connections`); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	} else {
-		for rows.Next() {
-			var a, b int64
-			rows.Scan(&a, &b)
-			if _, err := tx.Exec(`INSERT INTO connections_uuid (user_id, other_user_id) VALUES (?, ?)`,
-				userMap[a], userMap[b]); err != nil {
-				log.Fatalf("uuid migration: %v", err)
-			}
-		}
-		rows.Close()
-	}
-
-	for _, drop := range []string{`DROP TABLE claims`, `DROP TABLE connections`, `DROP TABLE items`, `DROP TABLE lists`, `DROP TABLE users`} {
-		if _, err := tx.Exec(drop); err != nil {
-			log.Fatalf("uuid migration: %v", err)
-		}
-	}
-	for _, rename := range []string{`ALTER TABLE users_uuid RENAME TO users`, `ALTER TABLE lists_uuid RENAME TO lists`, `ALTER TABLE items_uuid RENAME TO items`, `ALTER TABLE claims_uuid RENAME TO claims`, `ALTER TABLE connections_uuid RENAME TO connections`} {
-		if _, err := tx.Exec(rename); err != nil {
-			log.Fatalf("uuid migration: %v", err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		log.Fatalf("uuid migration: %v", err)
-	}
 }
 
 // secureHeaders adds baseline security headers to every response.
@@ -386,15 +167,100 @@ func cacheStatic(next http.Handler) http.Handler {
 	})
 }
 
-func serveIndex(w http.ResponseWriter) {
+// authConfig returns the runtime Authentik OIDC settings embedded in the
+// served page. Both values are public (the SPA needs them to start its OIDC
+// flow) so they can be supplied per-deployment without requiring them at
+// Docker build time.
+func authConfig() (issuer, clientID string) {
+	return os.Getenv("AUTHENTIK_ISSUER"), os.Getenv("AUTHENTIK_CLIENT_ID")
+}
+
+// The window.__GIFTLSTR__ script baked into the shell from an earlier render,
+// whichever config it holds. `(?s)` so a wrapped/multiline script still
+// matches; `.*?` is non-greedy so it stops at the config script's own closing
+// </script>.
+var authConfigRe = regexp.MustCompile(`(?s)<script>window\.__GIFTLSTR__.*?</script>`)
+
+// escapeJS makes an env value safe to inline inside a JS string literal.
+func escapeJS(s string) string {
+	r := strings.NewReplacer("\\", "\\\\", `"`, `\"`, "\n", "\\n", "\r", "\\r", "<", "\\u003c", ">", "\\u003e", "&", "\\u0026")
+	return r.Replace(s)
+}
+
+// authConfigScript returns the inline script that defines the runtime OIDC
+// config for the SPA.
+func authConfigScript(issuer, clientID string) string {
+	return `<script>window.__GIFTLSTR__ = { authIssuer: "` + escapeJS(issuer) + `", authClientId: "` + escapeJS(clientID) + `" };</script>`
+}
+
+// inlineScriptRe matches a plain (attribute-free) inline script block; these
+// are the only inline scripts the SPA shell contains.
+var inlineScriptRe = regexp.MustCompile(`(?s)<script\s*>([\s\S]*?)</script>`)
+
+// scriptHash returns the base64 SHA-256 of an inline script block's contents,
+// in the form CSP `'sha256-…'` sources take, or "" when the block holds no
+// inline script.
+func scriptHash(block string) string {
+	m := inlineScriptRe.FindStringSubmatch(block)
+	if m == nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(m[1]))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// contentSecurityPolicy returns the CSP header value for the SPA shell.
+// Everything loads from the same origin except the theme bootstrap and the
+// runtime OIDC config, which are inline scripts allowed by hash, and images,
+// which may come from any https source (item tiles embed third-party previews
+// and favicons).
+func contentSecurityPolicy(themeHash, configHash string) string {
+	scripts := "script-src 'self'"
+	for _, h := range []string{themeHash, configHash} {
+		if h != "" {
+			scripts += " 'sha256-" + h + "'"
+		}
+	}
+	return "default-src 'self'; " + scripts +
+		"; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;" +
+		" connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+}
+
+// setAuthConfig replaces any previously set window.__GIFTLSTR__ config script
+// in the SPA shell with the given runtime Auth settings, then inserts it
+// before the first module script so it is defined before the app bundle runs.
+func setAuthConfig(html, issuer, clientID string) string {
+	html = authConfigRe.ReplaceAllString(html, "")
+	return strings.Replace(html, "<script type=\"module\"", authConfigScript(issuer, clientID)+"<script type=\"module\"", 1)
+}
+
+// renderIndex loads the embedded SPA shell and bakes the runtime Authentik
+// OIDC config into it, deriving the CSP that matches the inline scripts it
+// contains. Called once at startup so the config is resolved from the
+// deployment environment, not the build.
+func renderIndex() ([]byte, bool) {
 	b, err := staticFS.ReadFile("static/index.html")
 	if err != nil {
+		return nil, false
+	}
+	issuer, clientID := authConfig()
+	cfg := authConfigScript(issuer, clientID)
+	indexCSP = contentSecurityPolicy(scriptHash(string(b)), scriptHash(cfg))
+	return []byte(setAuthConfig(string(b), issuer, clientID)), true
+}
+
+// serveIndex serves the SPA HTML shell rendered at startup.
+func serveIndex(w http.ResponseWriter) {
+	if indexHTML == nil {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Write(b)
+	if indexCSP != "" {
+		w.Header().Set("Content-Security-Policy", indexCSP)
+	}
+	w.Write(indexHTML)
 }
 
 func logMiddleware(next http.Handler) http.Handler {
@@ -409,7 +275,7 @@ func logMiddleware(next http.Handler) http.Handler {
 
 type user struct {
 	ID          string `json:"id"`
-	ClerkUserID string `json:"-"`
+	AuthUserID  string `json:"-"`
 	Username    string `json:"username"`
 	DisplayName string `json:"displayName"`
 	IsAdmin     bool   `json:"isAdmin"`
@@ -422,7 +288,7 @@ type user struct {
 func scanUser(row *sql.Row) (*user, error) {
 	var u user
 	var theme sql.NullString
-	err := row.Scan(&u.ID, &u.ClerkUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode)
+	err := row.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode)
 	if err != nil {
 		return nil, err
 	}
@@ -434,20 +300,21 @@ func scanUser(row *sql.Row) (*user, error) {
 	return &u, nil
 }
 
-const userCols = `id, clerk_user_id, username, display_name, is_admin, birthday, theme_style, share_code`
+const userCols = `id, auth_user_id, username, display_name, is_admin, birthday, theme_style, share_code`
 
 func getSessionToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
 
-// adminFromEnv reports whether the Clerk id is listed in ADMIN_USER_IDS.
-func adminFromEnv(clerkID string) bool {
+// adminFromEnv reports whether the external identity (Authentik `sub`) is
+// listed in ADMIN_USER_IDS.
+func adminFromEnv(subject string) bool {
 	admins := os.Getenv("ADMIN_USER_IDS")
 	if admins == "" {
 		return false
 	}
 	for _, id := range strings.Split(admins, ",") {
-		if strings.TrimSpace(id) == clerkID {
+		if strings.TrimSpace(id) == subject {
 			return true
 		}
 	}
@@ -455,9 +322,9 @@ func adminFromEnv(clerkID string) bool {
 }
 
 // insertUserAndList creates the user row plus its active list inside one
-// transaction. Falls back to a clerk-id-suffixed username if the derived
+// transaction. Falls back to an auth-id-suffixed username if the derived
 // username collides.
-func insertUserAndList(clerkID, username, displayName string, isAdmin bool, birthday string) (*user, error) {
+func insertUserAndList(authID, username, displayName string, isAdmin bool, birthday string) (*user, error) {
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, err
@@ -465,17 +332,17 @@ func insertUserAndList(clerkID, username, displayName string, isAdmin bool, birt
 	defer tx.Rollback()
 	uid := newID()
 	insert := func(name string) (sql.Result, error) {
-		return tx.Exec(`INSERT INTO users (id, clerk_user_id, username, display_name, is_admin, birthday, theme_style, share_code)
+		return tx.Exec(`INSERT INTO users (id, auth_user_id, username, display_name, is_admin, birthday, theme_style, share_code)
 			VALUES (?, ?, ?, ?, ?, ?, 'kinetic', '')
-			ON CONFLICT(clerk_user_id) DO NOTHING`,
-			uid, clerkID, name, displayName, isAdmin, birthday)
+			ON CONFLICT(auth_user_id) DO NOTHING`,
+			uid, authID, name, displayName, isAdmin, birthday)
 	}
 	res, err := insert(username)
 	if err != nil {
 		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		u, err := getUserByClerkID(clerkID)
+		u, err := getUserByAuthID(authID)
 		if err != nil {
 			return nil, err
 		}
@@ -487,38 +354,26 @@ func insertUserAndList(clerkID, username, displayName string, isAdmin bool, birt
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &user{ID: uid, ClerkUserID: clerkID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, ThemeStyle: "kinetic", ShareCode: "", IsNew: true}, nil
+	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, ThemeStyle: "kinetic", ShareCode: "", IsNew: true}, nil
 }
 
 // provisionUser creates the local user row and active list on first login.
-func provisionUser(externalID string) (*user, error) {
-	ctx := context.Background()
-	username, displayName, birthday, err := activeAuth.ProvisionInfo(ctx, externalID)
-	if err != nil {
-		return nil, err
-	}
+func provisionUser(id *Identity) (*user, error) {
 	// Reset dates are set up during account creation: the birthday comes from
 	// the identity provider's metadata (MM-DD); Christmas is fixed at 12-25.
 	// Admin rights come exclusively from ADMIN_USER_IDS so that provisioning
 	// can never accidentally escalate a user.
-	return insertUserAndList(externalID, username, displayName, adminFromEnv(externalID), normalizeMMDD(birthday))
+	return insertUserAndList(id.Subject, id.Username, id.DisplayName, adminFromEnv(id.Subject), normalizeMMDD(id.Birthday))
 }
 
-func getUserByClerkID(clerkID string) (*user, error) {
-	return scanUser(db.QueryRow(`SELECT `+userCols+` FROM users WHERE clerk_user_id = ?`, clerkID))
-}
-
-func strVal(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
+func getUserByAuthID(authID string) (*user, error) {
+	return scanUser(db.QueryRow(`SELECT `+userCols+` FROM users WHERE auth_user_id = ?`, authID))
 }
 
 // e2eUser provisions/loads a local user from an "e2e:<username>:<display name>"
 // bearer token. Only enabled when E2E_TEST_MODE=1 (which main() refuses to
-// combine with real Clerk credentials), so automated end-to-end tests can run
-// without Clerk.
+// combine with real Authentik credentials), so automated end-to-end tests can
+// run without an identity provider.
 func e2eUser(token string) (*user, error) {
 	parts := strings.SplitN(strings.TrimPrefix(token, "e2e:"), ":", 3)
 	if len(parts) < 2 || parts[0] == "" {
@@ -549,21 +404,22 @@ func currentUser(r *http.Request) (*user, error) {
 	if e2eTestMode() && strings.HasPrefix(token, "e2e:") {
 		return e2eUser(token)
 	}
-	externalID, err := activeAuth.VerifySession(r.Context(), token)
+	ident, err := activeAuth.VerifySession(r.Context(), token)
 	if err != nil {
+		log.Printf("auth rejected session token: %v", err)
 		return nil, err
 	}
 
-	u, err := getUserByClerkID(externalID)
+	u, err := getUserByAuthID(ident.Subject)
 	if errors.Is(err, sql.ErrNoRows) {
-		return provisionUser(externalID)
+		return provisionUser(ident)
 	}
 	if err != nil {
 		return nil, err
 	}
 	// Keep admin flags in sync with ADMIN_USER_IDS even after initial
 	// provisioning.
-	if !u.IsAdmin && adminFromEnv(externalID) {
+	if !u.IsAdmin && adminFromEnv(ident.Subject) {
 		if _, err := db.Exec(`UPDATE users SET is_admin = 1 WHERE id = ?`, u.ID); err == nil {
 			u.IsAdmin = true
 		}
@@ -712,7 +568,7 @@ func archiveLoop() {
 		for rows.Next() {
 			var u user
 			var theme sql.NullString
-			if rows.Scan(&u.ID, &u.ClerkUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode) == nil {
+			if rows.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode) == nil {
 				if theme.Valid {
 					u.ThemeStyle = theme.String
 				} else {

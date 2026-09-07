@@ -8,7 +8,7 @@ test('API rejects unauthenticated requests', async ({ request }) => {
 
 test('UI shows the sign-in screen when not logged in', async ({ page }) => {
 	await page.goto('/');
-	await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
+	await expect(page.getByRole('button', { name: 'Sign in' })).toBeVisible();
 });
 
 test.describe('authenticated', () => {
@@ -28,7 +28,7 @@ test.describe('authenticated', () => {
 		});
 	}
 
-	test('UI skips Clerk when an e2e token is present', async ({ page }) => {
+	test('UI skips the identity provider when an e2e token is present', async ({ page }) => {
 		await login(page, ALICE);
 		await page.goto('/');
 		await expect(page.getByRole('heading', { name: /Alice[’']s Wishlist/ })).toBeVisible();

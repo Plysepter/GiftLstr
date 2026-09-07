@@ -1,12 +1,11 @@
 // Front-end identity provider abstraction.
 //
 // auth.ts owns the app's session/`user` store and only talks to a
-// `FeAuthProvider`. Swapping Clerk for another provider (Auth0, Firebase, your
-// own OIDC, etc.) means implementing this interface and picking it in
-// `pickAuthProvider` — no page/route changes are required.
+// `FeAuthProvider`. Swapping providers means implementing this interface and
+// picking it in `pickAuthProvider` — no page/route changes are required.
 
 export interface FeAuthProvider {
-  /** A stable, human-readable name, e.g. "clerk" or "e2e". */
+  /** A stable, human-readable name, e.g. "oidc" or "e2e". */
   name: string;
   /** Load the SDK and make the provider ready to answer getToken(). */
   ready(): Promise<void>;
@@ -28,129 +27,300 @@ export interface FeAuthProvider {
 }
 
 // ---------------------------------------------------------------------------
-// Clerk provider (default)
+// OIDC provider (Authentik, default)
 // ---------------------------------------------------------------------------
 
-const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
-
-let clerk: InstanceType<(typeof import("@clerk/clerk-js/no-rhc"))["Clerk"]> | null = null;
-let clerkReady: Promise<void> | null = null;
-
-/** Publish a durable (non-serializable) sign-in error out to the Login page. */
-function publishSignInError(message: string | null): void {
-  window.dispatchEvent(new CustomEvent("giftlstr:signin-error", { detail: message }));
+// Authentik's OIDC configuration is public (issuer + client id) and is
+// injected into the served page at runtime by the backend (see serveIndex in
+// server/main.go). During local dev the values come from VITE_AUTHENTIK_*.
+interface AuthConfig {
+  authIssuer?: string;
+  authClientId?: string;
 }
 
-function signInErrorMessage(err: unknown): string {
-  const e = err as {
-    status?: number;
-    retryAfter?: number;
-    errors?: Array<{ message?: string; long_message?: string }>;
-  };
-  if (e?.status === 429) {
-    const secs = e.retryAfter;
-    const wait =
-      secs != null && secs > 0
-        ? secs >= 60
-          ? `about ${Math.ceil(secs / 60)} minute${secs >= 120 ? "s" : ""}`
-          : `${secs} seconds`
-        : "a few minutes";
-    return `Google sign-in is rate-limited (Clerk development keys cap OAuth usage). Try again in ${wait}.`;
-  }
-  return (
-    e?.errors?.[0]?.long_message ??
-    e?.errors?.[0]?.message ??
-    "Something went wrong starting Google sign-in."
+const runtimeConfig = (globalThis as { __GIFTLSTR__?: AuthConfig }).__GIFTLSTR__ ?? {};
+const issuer =
+  runtimeConfig.authIssuer || (import.meta.env.VITE_AUTHENTIK_ISSUER as string | undefined);
+const clientId =
+  runtimeConfig.authClientId || (import.meta.env.VITE_AUTHENTIK_CLIENT_ID as string | undefined);
+
+interface OIDCDiscovery {
+  issuer: string;
+  authorization_endpoint: string;
+  token_endpoint: string;
+  end_session_endpoint?: string;
+}
+
+const TOKENS_KEY = "giftlstr:oidc:tokens";
+const PKCE_KEY = "giftlstr:oidc:pkce";
+const STATE_KEY = "giftlstr:oidc:state";
+const LOGOUT_EVENT = "giftlstr:oidc:logout";
+
+interface Tokens {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+}
+
+let discovery: Promise<OIDCDiscovery> | null = null;
+let lastNotified: boolean | null = null;
+
+/** Publish a durable (non-serializable) sign-in error out to the Login page. */
+export function publishSignInError(message: string | null): void {
+  window.dispatchEvent(
+    new CustomEvent<string | null>("giftlstr-signin-error", { detail: message }),
   );
 }
 
-async function loadClerk(): Promise<void> {
-  if (!publishableKey) {
-    console.error("VITE_CLERK_PUBLISHABLE_KEY is not set");
-    return;
+function readTokens(): Tokens | null {
+  try {
+    const raw = localStorage.getItem(TOKENS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Tokens;
+    return parsed.accessToken ? parsed : null;
+  } catch {
+    return null;
   }
-  // Clerk is loaded on demand so its SDK stays out of the initial bundle.
-  // We render our own sign-in UI on top of the headless ("no-rhc") build and
-  // the vanilla Frontend API client — no @clerk/ui components are bundled.
-  const { Clerk } = await import("@clerk/clerk-js/no-rhc");
-  const c = new Clerk(publishableKey);
-  await c.load();
-  clerk = c;
 }
 
-/** Ensure the Clerk SDK is loaded (UI components available), then resolve. */
-function ensureReady(): Promise<void> {
-  if (!clerkReady) {
-    clerkReady = loadClerk();
-  }
-  return clerkReady;
+function clearTokens(): void {
+  localStorage.removeItem(TOKENS_KEY);
 }
 
-export const clerkProvider: FeAuthProvider = {
-  name: "clerk",
-  ready: ensureReady,
-  async getToken(): Promise<string | null> {
-    const session = clerk?.session;
-    return session ? session.getToken() : null;
-  },
-  async hasSession(): Promise<boolean> {
-    return Boolean(clerk?.session);
-  },
-  onSessionChange(cb: (active: boolean) => void): () => void {
-    if (!clerk) return () => {};
-    return clerk.addListener(({ session }) => cb(Boolean(session)));
-  },
-  openSignIn(): void {
-    // Google SSO: kick off the OAuth flow. clerk-signIn.create() returns the
-    // Google authorization URL on firstFactorVerification; newer clerk-js no
-    // longer navigates automatically, so we do. Google returns to
-    // /signin-oauth, where init() completes the session via completeOAuthSignIn().
-    void ensureReady()
-      .then(async () => {
-        if (!clerk?.client) {
-          publishSignInError("Sign-in isn't configured yet.");
-          return;
+/** Base64url-encode raw bytes (unpadded), the OIDC PKCE/state encoding. */
+function toBase64Url(bytes: Uint8Array): string {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function randomString(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return toBase64Url(buf);
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return toBase64Url(new Uint8Array(digest));
+}
+
+/** Fetch and cache Authentik's OIDC discovery document via the server proxy
+ * (browser- and server-reachable, with endpoints rewritten to the browser
+ * issuer), so the SPA never needs CORS access to Authentik directly. */
+function getDiscovery(): Promise<OIDCDiscovery> {
+  if (!discovery) {
+    discovery = fetch("/api/oidc/discovery")
+      .then((r) => {
+        if (r.status === 503) {
+          throw new Error("Authentik is not configured");
         }
-        const signIn = await clerk.client.signIn.create({
-          strategy: "oauth_google",
-          redirectUrl: `${window.location.origin}/signin-oauth`,
-          actionCompleteRedirectUrl: `${window.location.origin}/`,
-        });
-        const url = signIn.firstFactorVerification?.externalVerificationRedirectURL;
-        if (url) {
-          window.location.assign(url.toString());
-        } else {
-          publishSignInError("Couldn't start Google sign-in: no redirect URL was returned.");
-        }
+        if (!r.ok) throw new Error(`OIDC discovery failed (${r.status})`);
+        return r.json() as Promise<OIDCDiscovery>;
       })
       .catch((err) => {
-        console.error("failed to start google sign-in", err);
-        publishSignInError(signInErrorMessage(err));
+        discovery = null; // allow retry next time
+        throw err;
       });
+  }
+  return discovery;
+}
+
+function redirectUri(): string {
+  return `${window.location.origin}/signin-oauth`;
+}
+
+/** Exchange an authorization code or refresh token via the server proxy. */
+function unauthedTokenExchange(body: Record<string, string>): Promise<Tokens> {
+  const params = new URLSearchParams(body);
+  return fetch("/api/oidc/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  }).then(async (res) => {
+    const data = (await res.json().catch(() => ({}))) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+      error?: string;
+      error_description?: string;
+    };
+    if (!res.ok || !data.access_token) {
+      throw new Error(
+        data.error_description || data.error || `Token exchange failed (${res.status})`,
+      );
+    }
+    const tokens: Tokens = {
+      accessToken: data.access_token,
+      expiresAt: Date.now() + (data.expires_in ? data.expires_in * 1000 : 3600 * 1000),
+    };
+    if (data.refresh_token) {
+      tokens.refreshToken = data.refresh_token;
+    }
+    return tokens;
+  });
+}
+
+/** Try to slide the session forward with the stored refresh token. */
+async function tryRefresh(): Promise<boolean> {
+  const t = readTokens();
+  if (!t?.refreshToken) return false;
+  try {
+    const next = await unauthedTokenExchange({
+      grant_type: "refresh_token",
+      refresh_token: t.refreshToken,
+      client_id: clientId ?? "",
+    });
+    localStorage.setItem(TOKENS_KEY, JSON.stringify(next));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a usable session exists, refreshing if necessary. */
+async function sessionActive(): Promise<boolean> {
+  const t = readTokens();
+  if (!t?.accessToken) return false;
+  if (t.expiresAt > Date.now() + 30_000) return true;
+  if (await tryRefresh()) return true;
+  clearTokens();
+  return false;
+}
+
+function notify(cb: (active: boolean) => void): void {
+  void sessionActive().then((active) => {
+    if (active !== lastNotified) {
+      lastNotified = active;
+      cb(active);
+    }
+  });
+}
+
+export const oidcProvider: FeAuthProvider = {
+  name: "oidc",
+  async ready(): Promise<void> {
+    if (!clientId) {
+      console.error("Authentik OIDC config missing (AUTHENTIK_CLIENT_ID at runtime)");
+      return;
+    }
+    if (!issuer) {
+      console.warn("AUTHENTIK_ISSUER not injected; sign-in may not be fully configured");
+    }
+    // Warm the discovery cache so sign-in starts fast.
+    getDiscovery().catch((err) => console.error("OIDC discovery failed", err));
+  },
+  async getToken(): Promise<string | null> {
+    const t = readTokens();
+    if (!t?.accessToken) return null;
+    if (t.expiresAt > Date.now() + 30_000) return t.accessToken;
+    if (await tryRefresh()) {
+      return readTokens()?.accessToken ?? null;
+    }
+    clearTokens();
+    return null;
+  },
+  async hasSession(): Promise<boolean> {
+    return sessionActive();
+  },
+  onSessionChange(cb: (active: boolean) => void): () => void {
+    lastNotified = null;
+    notify(cb);
+    const interval = window.setInterval(() => notify(cb), 30_000);
+    const onStorage = (): void => notify(cb);
+    const onLogout = (): void => notify(cb);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(LOGOUT_EVENT, onLogout);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(LOGOUT_EVENT, onLogout);
+      lastNotified = null;
+    };
+  },
+  openSignIn(): void {
+    // Authorization Code + PKCE: send the browser to Authentik (via the
+    // authorization endpoint from the proxied discovery document), which
+    // either shows its own login (email/password, sources, MFA…) or completes
+    // SSO, then returns to /signin-oauth.
+    if (!clientId) {
+      publishSignInError("Sign-in isn't configured yet.");
+      return;
+    }
+    const state = randomString(32);
+    const verifier = randomString(32);
+    void sha256Hex(verifier).then((challenge) =>
+      getDiscovery().then(
+        (doc) => {
+          localStorage.setItem(STATE_KEY, state);
+          localStorage.setItem(PKCE_KEY, verifier);
+          const url = new URL(doc.authorization_endpoint);
+          url.searchParams.set("client_id", clientId);
+          url.searchParams.set("redirect_uri", redirectUri());
+          url.searchParams.set("response_type", "code");
+          url.searchParams.set("scope", "openid profile email");
+          url.searchParams.set("state", state);
+          url.searchParams.set("code_challenge", challenge);
+          url.searchParams.set("code_challenge_method", "S256");
+          window.location.assign(url.toString());
+        },
+        (err) => {
+          console.error("failed to start OIDC sign-in", err);
+          publishSignInError("Couldn't start sign-in: the identity provider is unreachable.");
+        },
+      ),
+    );
   },
   async completeOAuthSignIn(): Promise<void> {
     // Runs once when the browser lands back on /signin-oauth after SSO.
-    if (!clerk || window.location.pathname !== "/signin-oauth") return;
+    if (window.location.pathname !== "/signin-oauth") return;
     const params = new URLSearchParams(window.location.search);
-    const isFlow = [...params.keys()].some(
-      (k) => k.toLowerCase().includes("clerk") || k === "error",
-    );
-    if (!isFlow) return; // stale visit, nothing to complete
+    if (params.has("error")) {
+      publishSignInError(
+        params.get("error_description") || params.get("error") || "Sign-in failed.",
+      );
+      window.history.replaceState(null, "", window.location.origin + "/");
+      return;
+    }
+    const code = params.get("code");
+    const state = params.get("state");
+    if (!code || !state) {
+      window.history.replaceState(null, "", window.location.origin + "/");
+      return; // stale visit, nothing to complete
+    }
+    if (state !== localStorage.getItem(STATE_KEY)) {
+      publishSignInError("Sign-in state did not match; please try again.");
+      window.history.replaceState(null, "", window.location.origin + "/");
+      return;
+    }
+    const verifier = localStorage.getItem(PKCE_KEY);
+    if (!verifier) {
+      publishSignInError("Sign-in could not be completed; please try again.");
+      window.history.replaceState(null, "", window.location.origin + "/");
+      return;
+    }
     try {
-      await clerk.handleRedirectCallback({
-        signInForceRedirectUrl: "/",
-        signInFallbackRedirectUrl: "/",
-        signUpForceRedirectUrl: "/",
-        signUpFallbackRedirectUrl: "/",
+      const tokens = await unauthedTokenExchange({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri(),
+        client_id: clientId ?? "",
+        code_verifier: verifier,
       });
+      localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
     } catch (err) {
       console.error("oauth callback failed", err);
+      publishSignInError("Sign-in failed; please try again.");
     } finally {
+      localStorage.removeItem(STATE_KEY);
+      localStorage.removeItem(PKCE_KEY);
       window.history.replaceState(null, "", window.location.origin + "/");
     }
   },
   async signOut(): Promise<void> {
-    if (clerk) await clerk.signOut();
+    clearTokens();
+    window.dispatchEvent(new Event(LOGOUT_EVENT));
   },
 };
 
@@ -183,5 +353,5 @@ export function pickAuthProvider(): FeAuthProvider {
   if (e2eToken) {
     return e2eProvider(e2eToken);
   }
-  return clerkProvider;
+  return oidcProvider;
 }

@@ -28,8 +28,8 @@ export default defineConfig({
 		env: {
 			DATA_DIR: './e2e/.data',
 			E2E_TEST_MODE: '1',
-			// No CLERK_SECRET_KEY here: the server refuses to combine it with
-			// E2E_TEST_MODE, and e2e mode bypasses Clerk entirely.
+			// No AUTHENTIK_ISSUER here: the server refuses to combine it with
+			// E2E_TEST_MODE, and e2e mode bypasses the identity provider.
 		},
 	},
 });

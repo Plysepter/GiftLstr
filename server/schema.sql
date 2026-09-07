@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS users (
 	id TEXT PRIMARY KEY,
-	clerk_user_id TEXT NOT NULL UNIQUE,
+	auth_user_id TEXT NOT NULL UNIQUE,
 	username TEXT NOT NULL UNIQUE,
 	display_name TEXT NOT NULL,
 	is_admin INTEGER NOT NULL DEFAULT 0,

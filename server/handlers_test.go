@@ -35,15 +35,15 @@ func TestMain(m *testing.M) {
 	}
 	db = testDB
 
-	// Route auth lookups through the test DB instead of Clerk.
+	// Route auth lookups through the test DB instead of an identity provider.
 	currentUserFn = func(r *http.Request) (*user, error) {
-		clerkID := r.Header.Get("X-Test-User")
-		if clerkID == "" {
+		authID := r.Header.Get("X-Test-User")
+		if authID == "" {
 			return nil, fmt.Errorf("no session token")
 		}
 		var u user
-		err := db.QueryRow(`SELECT id, clerk_user_id, username, display_name, is_admin, birthday FROM users WHERE clerk_user_id = ?`, clerkID).
-			Scan(&u.ID, &u.ClerkUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday)
+		err := db.QueryRow(`SELECT id, auth_user_id, username, display_name, is_admin, birthday FROM users WHERE auth_user_id = ?`, authID).
+			Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday)
 		return &u, err
 	}
 
@@ -53,7 +53,7 @@ func TestMain(m *testing.M) {
 }
 
 // ctxWithUser returns a request carrying the given user in its context,
-// bypassing Clerk authentication.
+// bypassing identity-provider authentication.
 func ctxWithUser(r *http.Request, u *user) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), userCtxKey, u))
 }
@@ -71,7 +71,7 @@ func doJSON(t *testing.T, u *user, method, path string, reqBody any) (*httptest.
 	}
 	r := httptest.NewRequest(method, path, reader)
 	if u != nil {
-		r.Header.Set("X-Test-User", u.ClerkUserID)
+		r.Header.Set("X-Test-User", u.AuthUserID)
 	}
 	w := httptest.NewRecorder()
 	mux := http.NewServeMux()
@@ -92,17 +92,17 @@ func mustStatus(t *testing.T, w *httptest.ResponseRecorder, want int) {
 }
 
 // seedUser inserts a local user row directly and returns it.
-func seedUser(t *testing.T, clerkID, username string, isAdmin bool) *user {
+func seedUser(t *testing.T, authID, username string, isAdmin bool) *user {
 	t.Helper()
 	id := newID()
-	if _, err := db.Exec(`INSERT INTO users (id, clerk_user_id, username, display_name, is_admin, birthday) VALUES (?, ?, ?, ?, ?, '01-01')`,
-		id, clerkID, username, username, isAdmin); err != nil {
+	if _, err := db.Exec(`INSERT INTO users (id, auth_user_id, username, display_name, is_admin, birthday) VALUES (?, ?, ?, ?, ?, '01-01')`,
+		id, authID, username, username, isAdmin); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label) VALUES (?, ?, 'Active')`, newID(), id); err != nil {
 		t.Fatalf("seed list: %v", err)
 	}
-	return &user{ID: id, ClerkUserID: clerkID, Username: username, DisplayName: username, IsAdmin: isAdmin, Birthday: "01-01"}
+	return &user{ID: id, AuthUserID: authID, Username: username, DisplayName: username, IsAdmin: isAdmin, Birthday: "01-01"}
 }
 
 func activeList(t *testing.T, userID string) string {

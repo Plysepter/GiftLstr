@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VITE_CLERK_PUBLISHABLE_KEY= pnpm --dir web build
+pnpm --dir web build
 rm -rf server/static
 mkdir -p server/static
 cp -r web/dist/* server/static/

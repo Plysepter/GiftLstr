@@ -3,23 +3,23 @@ info:
   title: GiftLstr API
   description: >
     Backend API for the GiftLstr app. All endpoints require authentication
-    with a valid Clerk session token (Google OAuth), sent either as a Bearer
-    token in the Authorization header or via the __session cookie set by Clerk.
+    with a valid Authentik session token (OIDC access-token JWT), sent as a
+    Bearer token in the Authorization header.
   version: 1.0.0
 
 servers:
   - url: /
 
 security:
-  - clerkSession: []
+  - bearerAuth: []
 
 components:
   securitySchemes:
-    clerkSession:
+    bearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Clerk session JWT (also accepted via the __session cookie).
+      description: Authentik session access token (OIDC JWT, signed by the provider).
 
   parameters:
     page:
@@ -262,6 +262,54 @@ components:
             $ref: '#/components/schemas/Error'
 
 paths:
+  /api/oidc/discovery:
+    get:
+      summary: OIDC discovery document (proxied, browser-safe)
+      security: []
+      responses:
+        '200':
+          description: >
+            OIDC discovery document with endpoints rewritten for the browser.
+            Not authenticated — the SPA fetches this to start sign-in.
+        '503':
+          description: Identity provider not configured.
+
+  /api/oidc/token:
+    post:
+      summary: OIDC token exchange (proxied to Authentik)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                code:
+                  type: string
+                redirect_uri:
+                  type: string
+                client_id:
+                  type: string
+                code_verifier:
+                  type: string
+                refresh_token:
+                  type: string
+              required: [grant_type, client_id]
+      responses:
+        '200':
+          description: Token response (access_token + optional refresh_token).
+        '400':
+          description: Invalid client_id or malformed request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Identity provider not configured.
+
   /api/me:
     get:
       summary: Get the current user and their active list id

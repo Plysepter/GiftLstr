@@ -27,7 +27,7 @@
 			openSignIn();
 		}}
 	>
-		Continue with Google
+		Sign in
 	</button>
 </div>
 
