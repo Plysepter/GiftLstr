@@ -6,10 +6,6 @@ services:
     entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
     ports:
       - "8080:8080"
-    # Lets the server reach Authentik via host.docker.internal if you prefer
-    # that route (set AUTHENTIK_ISSUER_BACKEND accordingly).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
       - DATA_DIR=/data
       # Authentik OIDC credentials (see README). The issuer is the public URL

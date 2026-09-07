@@ -42,7 +42,7 @@ type authentikProvider struct {
 	// issuerBackend is where the server fetches the OIDC discovery document
 	// and JWKS from. It defaults to issuer and only needs to differ when the
 	// server cannot reach the browser-facing URL directly (e.g. Authentik
-	// published via host.docker.internal on the same host).
+	// behind a reverse proxy the server must reach under a different origin).
 	issuerBackend string
 	// clientID, when set, is checked against the token's `aud` claim.
 	clientID string
