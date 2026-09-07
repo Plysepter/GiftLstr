@@ -87,12 +87,12 @@ function loadPrefs(): { style: ThemeStyle; events: boolean; useOwnerTheme: boole
     const events = localStorage.getItem("theme-events");
     const useOwnerTheme = localStorage.getItem("theme-useOwner");
     return {
-      style: ALL_STYLES.includes(style as ThemeStyle) ? (style as ThemeStyle) : "kinetic",
+      style: ALL_STYLES.includes(style as ThemeStyle) ? (style as ThemeStyle) : "aurora",
       events: events !== "0",
       useOwnerTheme: useOwnerTheme !== "0",
     };
   } catch {
-    return { style: "kinetic", events: true, useOwnerTheme: true };
+    return { style: "aurora", events: true, useOwnerTheme: true };
   }
 }
 

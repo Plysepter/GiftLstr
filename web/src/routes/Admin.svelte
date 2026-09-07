@@ -346,7 +346,7 @@
 	<section>
 		<h2>Users</h2>
 		<p class="muted">
-			Users are created automatically the first time they sign in with Google. The last admin
+			Users are created automatically the first time they sign in. The last admin
 			cannot be demoted or deleted. Showing 25 per page.
 		</p>
 

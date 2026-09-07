@@ -219,7 +219,7 @@
 
 	<div class="card">
 		<p class="muted">
-			Signed in via Google as @{$user.username}{#if $user.isAdmin}&nbsp;· admin{/if}
+			Signed in as @{$user.username}{#if $user.isAdmin}&nbsp;· admin{/if}
 		</p>
 		<button class="secondary" onclick={() => void signOut()}>Sign out</button>
 	</div>
