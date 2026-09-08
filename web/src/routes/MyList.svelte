@@ -12,6 +12,7 @@
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
 	import Composer from '../lib/design/Composer.svelte';
+	import ConfirmDialog from '../lib/ConfirmDialog.svelte';
 	import { confetti } from '../lib/confetti.js';
 	import {
 		enqueueItem,
@@ -30,6 +31,8 @@
 	}
 
 	let items = $state<Item[]>([]);
+	let privateItems = $state<Item[]>([]);
+	let suggestedItems = $state<Item[]>([]);
 	let pending = $state<PendingItem[]>([]);
 	let error = $state('');
 	let loading = $state(true);
@@ -39,6 +42,9 @@
 	let copied = $state(false);
 	let dialogEl: HTMLDialogElement | undefined = $state();
 	let listEl: HTMLElement | undefined = $state();
+
+	// private / suggested confirmations
+	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
 
 	// ---------- first-run birthday prompt ----------
 	let birthModalEl: HTMLDialogElement | undefined = $state();
@@ -91,7 +97,9 @@
 			const me = $user;
 			if (!me) return;
 			const data = await api<UserListResponse>(`/api/users/${me.id}/list`);
-			items = data.items;
+			items = data.items.filter((i) => !i.suggestedBy);
+			suggestedItems = data.items.filter((i) => i.suggestedBy);
+			privateItems = data.privateItems ?? [];
 			if (navigator.onLine) network.offline = false;
 		} catch (err) {
 			if (isOfflineError(err) || !navigator.onLine) {
@@ -164,6 +172,88 @@
 		refreshPending();
 		await load();
 		scrollToBottom();
+	}
+
+	// ---------- private items ----------
+
+	async function addPrivateItem(item: { title: string; url: string; notes: string }): Promise<boolean> {
+		error = '';
+		try {
+			await api('/api/my/private-items', { method: 'POST', body: item });
+			await load();
+			return true;
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+			return false;
+		}
+	}
+
+	function confirmDeletePrivate(item: Item): void {
+		confirmState = {
+			title: 'Delete private idea?',
+			message: `Delete “${item.title}” permanently? This cannot be undone.`,
+			confirmLabel: 'Delete',
+			danger: true,
+			action: async () => {
+				await deletePrivate(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function deletePrivate(item: Item): Promise<void> {
+		error = '';
+		try {
+			await api(`/api/my/private-items/${item.id}`, { method: 'DELETE' });
+			privateItems = privateItems.filter((i) => i.id !== item.id);
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function confirmShareItem(item: Item): void {
+		confirmState = {
+			title: 'Share this idea?',
+			message: `“${item.title}” will appear on your list as “Suggested by ${($user?.displayName ?? '').split(/\s+/)[0]} ${($user?.displayName ?? '').split(/\s+/)[1]?.[0] ?? ''}” and your connections can claim it.`,
+			confirmLabel: 'Share',
+			action: async () => {
+				await sharePrivate(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function sharePrivate(item: Item): Promise<void> {
+		error = '';
+		try {
+			await api(`/api/my/private-items/${item.id}/share`, { method: 'PUT' });
+			privateItems = privateItems.filter((i) => i.id !== item.id);
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function confirmDeleteSuggested(item: Item): void {
+		confirmState = {
+			title: 'Unshare this idea?',
+			message: `Remove “${item.title}” from your shared suggestions? This cannot be undone.`,
+			confirmLabel: 'Unshare',
+			danger: true,
+			action: async () => {
+				await deleteSuggested(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function deleteSuggested(item: Item): Promise<void> {
+		error = '';
+		try {
+			await api(`/api/suggested-items/${item.id}`, { method: 'DELETE' });
+			suggestedItems = suggestedItems.filter((i) => i.id !== item.id);
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		}
 	}
 
 	function openEdit(item: Item): void {
@@ -455,6 +545,96 @@
 		</ul>
 	{/if}
 
+	{#if suggestedItems.length > 0}
+		<div class="section-divider suggested-divider">
+			<span class="section-label">
+				<Icon name="share" size={13} /> Suggested
+			</span>
+			<span class="section-hint">Shared with your connections — they can claim these</span>
+		</div>
+		<ul class="items suggested-list">
+			{#each suggestedItems as item (item.id)}
+				<li class="itemcard suggested-item">
+					<article class="card">
+						<div class="row1">
+							<ItemTile title={item.title} url={item.url} />
+							<div class="txt">
+								<h3>{item.title}</h3>
+								{#if item.url}<a class="domain" href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).host} ↗</a>{/if}
+							</div>
+						</div>
+						<div class="body">
+							{#if item.url}<LinkPreview url={item.url} />{/if}
+							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+							<span class="badge suggested-badge">Suggested by {item.suggestedBy}</span>
+							{#if item.claimed && item.claimedByName}
+								<span class="badge claimed">claimed by {item.claimedByName}</span>
+							{/if}
+						</div>
+						<div class="actions">
+							<button
+								class="act del"
+								aria-label="Unshare {item.title}"
+								title="Remove from shared suggestions"
+								onclick={() => confirmDeleteSuggested(item)}
+							>
+								<Icon name="x" />
+							</button>
+						</div>
+					</article>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
+	<div class="section-divider">
+		<span class="section-label">
+			<Icon name="lock" size={13} /> Private ideas
+		</span>
+		<span class="section-hint">Only you can see these until shared</span>
+	</div>
+	<Composer onadd={(i) => addPrivateItem(i)} isPrivate />
+
+	{#if privateItems.length > 0}
+		<ul class="items private-list">
+			{#each privateItems as item (item.id)}
+				<li class="itemcard private-item">
+					<article class="card">
+						<div class="row1">
+							<ItemTile title={item.title} url={item.url} />
+							<div class="txt">
+								<h3>{item.title}</h3>
+								{#if item.url}<a class="domain" href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).host} ↗</a>{/if}
+							</div>
+						</div>
+						<div class="body">
+							{#if item.url}<LinkPreview url={item.url} />{/if}
+							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+						</div>
+						<div class="actions">
+							<button
+								class="act share"
+								aria-label="Share {item.title}"
+								title="Share with your connections"
+								onclick={() => confirmShareItem(item)}
+							>
+								<Icon name="share" />
+							</button>
+							<button
+								class="act del"
+								aria-label="Delete private idea {item.title}"
+								title="Delete permanently"
+								onclick={() => confirmDeletePrivate(item)}
+							>
+								<Icon name="trash" />
+							</button>
+						</div>
+					</article>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
 	<Composer onadd={(i) => addItem(i)} />
 
 	<dialog
@@ -484,6 +664,18 @@
 			{/if}
 		</form>
 	</dialog>
+
+	{#if confirmState}
+		<ConfirmDialog
+			open={true}
+			title={confirmState.title}
+			message={confirmState.message}
+			confirmLabel={confirmState.confirmLabel}
+			danger={confirmState.danger}
+			onconfirm={confirmState.action}
+			oncancel={() => (confirmState = null)}
+		/>
+	{/if}
 
 	{#if showBirthModal}
 		<dialog
@@ -529,6 +721,37 @@
 	}
 	.removed-list {
 		margin-top: 0.95rem;
+	}
+	.section-divider {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		margin: 1.6rem 0 0.4rem;
+	}
+	.section-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.section-hint {
+		font-size: 0.74rem;
+		color: var(--muted);
+		opacity: 0.8;
+	}
+	.private-item .card {
+		border-style: dashed;
+		border-color: color-mix(in srgb, var(--acc) 35%, var(--line));
+		background: color-mix(in srgb, var(--surface) 70%, transparent);
+	}
+	.act.share {
+		background: color-mix(in srgb, var(--c-share, var(--acc)) 15%, transparent);
+		color: var(--acc-ink);
 	}
 	.item-in {
 		animation: rise-in 460ms cubic-bezier(0.2, 0.8, 0.25, 1) backwards;

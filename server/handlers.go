@@ -65,6 +65,12 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/my/items/{id}/restore", rl.rateLimit(auth(handleRestoreItem)))
 	mux.HandleFunc("PUT /api/my/items/order", rl.rateLimit(auth(handleReorderItems)))
 
+	mux.HandleFunc("POST /api/my/private-items", rl.rateLimit(auth(handleAddPrivateItem)))
+	mux.HandleFunc("GET /api/my/private-items", rl.rateLimit(auth(handleGetPrivateItems)))
+	mux.HandleFunc("DELETE /api/my/private-items/{id}", rl.rateLimit(auth(handleDeletePrivateItem)))
+	mux.HandleFunc("PUT /api/my/private-items/{id}/share", rl.rateLimit(auth(handleSharePrivateItem)))
+	mux.HandleFunc("DELETE /api/suggested-items/{id}", rl.rateLimit(auth(handleDeleteSuggestedItem)))
+
 	mux.HandleFunc("PUT /api/items/{id}/claim", rl.rateLimit(auth(handleClaim)))
 	mux.HandleFunc("DELETE /api/items/{id}/claim", rl.rateLimit(auth(handleUnclaim)))
 
@@ -252,10 +258,11 @@ type listItem struct {
 	ClaimedByMe   bool    `json:"claimedByMe"`
 	ClaimedByName *string `json:"claimedByName,omitempty"`
 	ClaimedUserID string  `json:"claimedUserId,omitempty"`
+	SuggestedBy   string  `json:"suggestedBy,omitempty"`
 }
 
 func itemRows(where string, args ...any) ([]listItem, error) {
-	q := `SELECT i.id, i.title, i.url, i.notes, i.removed_at, c.user_id AS claim_user_id, cu.display_name AS claim_name
+	q := `SELECT i.id, i.title, i.url, i.notes, i.removed_at, c.user_id AS claim_user_id, cu.display_name AS claim_name, i.suggested_by
 		FROM items i
 		LEFT JOIN claims c ON c.item_id = i.id
 		LEFT JOIN users cu ON cu.id = c.user_id
@@ -269,7 +276,7 @@ func itemRows(where string, args ...any) ([]listItem, error) {
 	for rows.Next() {
 		var it listItem
 		var removed, claimName, claimUserID sql.NullString
-		if err := rows.Scan(&it.ID, &it.Title, &it.URL, &it.Notes, &removed, &claimUserID, &claimName); err != nil {
+		if err := rows.Scan(&it.ID, &it.Title, &it.URL, &it.Notes, &removed, &claimUserID, &claimName, &it.SuggestedBy); err != nil {
 			continue
 		}
 		if removed.Valid {
@@ -298,9 +305,10 @@ type listOwner struct {
 }
 
 type userListResponse struct {
-	User    listOwner  `json:"user"`
-	Items   []listItem `json:"items"`
-	IsOwner bool       `json:"isOwner"`
+	User         listOwner  `json:"user"`
+	Items        []listItem `json:"items"`
+	PrivateItems []listItem `json:"privateItems,omitempty"`
+	IsOwner      bool       `json:"isOwner"`
 }
 
 func handleUserList(w http.ResponseWriter, r *http.Request) {
@@ -328,11 +336,27 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "list error")
 		return
 	}
-	items, err := itemRows("i.list_id = ?", listID)
+	isOwner := viewer.ID == ownerID
+
+	// Both the owner and connected users see public + suggested items. The
+	// owner sees their shared ideas in a "Suggested" section so they can
+	// manage them; private items are returned separately, owner-only.
+	items, err := itemRows("i.list_id = ? AND i.visibility IN ('public', 'suggested')", listID)
 	if err != nil {
 		fail(w, 500, "query error")
 		return
 	}
+
+	// Owner's private items returned in a separate field.
+	var privateItems []listItem
+	if isOwner {
+		privateItems, err = itemRows("i.list_id = ? AND i.visibility = 'private'", listID)
+		if err != nil {
+			fail(w, 500, "query error")
+			return
+		}
+	}
+
 	// Admins may opt into seeing who claimed items on a live list they are
 	// viewing; everyone else (and admins by default) keeps claimers hidden.
 	revealClaimers := viewer.IsAdmin && r.URL.Query().Get("revealClaimers") == "1"
@@ -349,7 +373,19 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		}
 		it.ClaimedUserID = ""
 	}
-	writeJSON(w, 200, userListResponse{User: owner, Items: items, IsOwner: viewer.ID == ownerID})
+	// Same treatment for private items (owner view).
+	for i := range privateItems {
+		it := &privateItems[i]
+		if !it.Claimed {
+			continue
+		}
+		if it.ClaimedUserID == viewer.ID {
+			it.ClaimedByMe = true
+			it.ClaimedByName = nil
+		}
+		it.ClaimedUserID = ""
+	}
+	writeJSON(w, 200, userListResponse{User: owner, Items: items, PrivateItems: privateItems, IsOwner: isOwner})
 }
 
 type listEntry struct {
@@ -871,6 +907,163 @@ func handleReorderItems(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := tx.Commit(); err != nil {
 		fail(w, 500, "reorder failed")
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// ---------- private / suggested items ----------
+
+// ownPrivateItem reports whether the item belongs to the user's active list
+// and is currently a private (unshared) item.
+func ownPrivateItem(u *user, itemID string) bool {
+	var listID string
+	err := db.QueryRow(`SELECT i.list_id FROM items i JOIN lists l ON l.id = i.list_id WHERE i.id = ? AND l.user_id = ? AND l.archived_at IS NULL AND i.visibility = 'private'`, itemID, u.ID).Scan(&listID)
+	return err == nil
+}
+
+// handleAddPrivateItem adds a private (owner-only) idea to the user's active
+// list. Input matches the main gift-idea composer.
+func handleAddPrivateItem(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title string `json:"title"`
+		URL   string `json:"url"`
+		Notes string `json:"notes"`
+	}
+	if err := decode(w, r, &req); err != nil || strings.TrimSpace(req.Title) == "" {
+		fail(w, 400, "title required")
+		return
+	}
+	itemURL := strings.TrimSpace(req.URL)
+	if !validItemURL(itemURL) {
+		fail(w, 400, "url must be an absolute http(s) link")
+		return
+	}
+	u := userFrom(r)
+	listID, err := activeListID(u.ID)
+	if err != nil {
+		fail(w, 500, "list error")
+		return
+	}
+	atLimit, err := atItemLimit(listID)
+	if err != nil {
+		fail(w, 500, "list error")
+		return
+	}
+	if atLimit {
+		fail(w, 400, fmt.Sprintf("list is full (max %d items)", maxListItems))
+		return
+	}
+	id := newID()
+	if _, err := db.Exec(
+		`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility) VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order)+1 FROM items WHERE list_id = ?), 0), 'private')`,
+		id, listID, strings.TrimSpace(req.Title), itemURL, strings.TrimSpace(req.Notes), listID,
+	); err != nil {
+		log.Printf("add private item: %v", err)
+		fail(w, 500, "insert failed")
+		return
+	}
+	writeJSON(w, 201, map[string]any{"id": id})
+}
+
+// handleGetPrivateItems returns the caller's private ideas.
+func handleGetPrivateItems(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	listID, err := activeListID(u.ID)
+	if err != nil {
+		fail(w, 500, "list error")
+		return
+	}
+	items, err := itemRows("i.list_id = ? AND i.visibility = 'private'", listID)
+	if err != nil {
+		fail(w, 500, "query error")
+		return
+	}
+	for i := range items {
+		items[i].ClaimedUserID = ""
+	}
+	writeJSON(w, 200, map[string][]listItem{"items": items})
+}
+
+// handleDeletePrivateItem hard-deletes a private idea. A private idea cannot
+// be restored through the UI.
+func handleDeletePrivateItem(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	itemID, err := pathID(r, "id")
+	if err != nil || !ownPrivateItem(u, itemID) {
+		fail(w, 404, "item not found")
+		return
+	}
+	if _, err := db.Exec(`DELETE FROM items WHERE id = ?`, itemID); err != nil {
+		log.Printf("delete private item: %v", err)
+		fail(w, 500, "delete failed")
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleSharePrivateItem converts a private idea into a shared "suggested" item,
+// tagging it with the author's name so connected viewers can claim it.
+func handleSharePrivateItem(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	itemID, err := pathID(r, "id")
+	if err != nil || !ownPrivateItem(u, itemID) {
+		fail(w, 404, "item not found")
+		return
+	}
+	if _, err := db.Exec(`UPDATE items SET visibility = 'suggested', suggested_by = ?, suggested_by_id = ? WHERE id = ?`, u.DisplayName, u.ID, itemID); err != nil {
+		log.Printf("share private item: %v", err)
+		fail(w, 500, "share failed")
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok":          true,
+		"suggestedBy": u.DisplayName,
+	})
+}
+
+// canDeleteSuggestedItem reports whether the viewer (item author or admin) may
+// hard-delete a suggested item. Only the idea author and admins can delete a
+// shared item.
+func canDeleteSuggestedItem(viewer *user, itemID string) bool {
+	var suggestedByID string
+	err := db.QueryRow(`SELECT suggested_by_id FROM items WHERE id = ?`, itemID).Scan(&suggestedByID)
+	if err != nil {
+		return false
+	}
+	if viewer.IsAdmin {
+		return true
+	}
+	return suggestedByID != "" && suggestedByID == viewer.ID
+}
+
+// handleDeleteSuggestedItem hard-deletes a shared suggested item. Only the
+// original author (matched by display name on the same list) or an admin may
+// delete it.
+func handleDeleteSuggestedItem(w http.ResponseWriter, r *http.Request) {
+	viewer := userFrom(r)
+	itemID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	var ownerID string
+	var visibility string
+	if err := db.QueryRow(`SELECT l.user_id, i.visibility FROM items i JOIN lists l ON l.id = i.list_id WHERE i.id = ?`, itemID).Scan(&ownerID, &visibility); err != nil || visibility != "suggested" {
+		fail(w, 404, "item not found")
+		return
+	}
+	if !canView(viewer.ID, viewer.IsAdmin, ownerID) {
+		fail(w, 403, "no access to this item")
+		return
+	}
+	if !canDeleteSuggestedItem(viewer, itemID) {
+		fail(w, 403, "only the author or an admin can delete this item")
+		return
+	}
+	if _, err := db.Exec(`DELETE FROM items WHERE id = ?`, itemID); err != nil {
+		log.Printf("delete suggested item: %v", err)
+		fail(w, 500, "delete failed")
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
@@ -1500,18 +1693,58 @@ func handleAdminForceArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	newID, _ := res.LastInsertId()
-	if _, err := tx.Exec(`INSERT INTO items (list_id, title, url, notes, sort_order)
-		SELECT ?, title, url, notes, sort_order FROM items i
-		WHERE i.list_id = ? AND i.removed_at IS NULL AND i.id NOT IN (SELECT item_id FROM claims)`, newID, listID); err != nil {
-		log.Printf("force archive copy: %v", err)
+	// Carry over items with the same rules as the normal archive:
+	//   - Unclaimed public items copy as public.
+	//   - Unclaimed private items roll over as private.
+	//   - Unclaimed suggested items are dropped.
+	//   - Claimed items (any visibility) stay in the archive; claimed
+	//     private/suggested items are revealed as public on the new list.
+	rows, err := tx.Query(`SELECT i.title, i.url, i.notes, i.sort_order, i.visibility,
+			EXISTS(SELECT 1 FROM claims c WHERE c.item_id = i.id) AS claimed
+		FROM items i WHERE i.list_id = ? AND i.removed_at IS NULL`, listID)
+	if err != nil {
 		fail(w, 500, "archive failed")
 		return
+	}
+	defer rows.Close()
+	type carryVal struct {
+		title, url, notes, visibility string
+		sort                           int
+	}
+	var carry []carryVal
+	for rows.Next() {
+		var title, url, notes, visibility string
+		var sort int
+		var claimed bool
+		if rows.Scan(&title, &url, &notes, &sort, &visibility, &claimed) != nil {
+			continue
+		}
+		if claimed {
+			if visibility == "public" {
+				continue // claimed public items stay in archive
+			}
+			carry = append(carry, carryVal{title, url, notes, "public", sort}) // reveal claimed private/suggested
+		} else if visibility == "public" {
+			carry = append(carry, carryVal{title, url, notes, "public", sort})
+		} else if visibility == "private" {
+			carry = append(carry, carryVal{title, url, notes, "private", sort}) // roll over
+		}
+		// unclaimed suggested -> dropped
+	}
+	rows.Close()
+	for _, f := range carry {
+		if _, err := tx.Exec(`INSERT INTO items (list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id)
+			VALUES (?, ?, ?, ?, ?, ?, '', '')`, newID, f.title, f.url, f.notes, f.sort, f.visibility); err != nil {
+			log.Printf("force archive copy: %v", err)
+			fail(w, 500, "archive failed")
+			return
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		fail(w, 500, "archive failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "archivedListId": listID, "newListId": newID, "copied": count})
+	writeJSON(w, 200, map[string]any{"ok": true, "archivedListId": listID, "newListId": newID, "copied": len(carry)})
 }
 
 func handleAdminHardDelete(w http.ResponseWriter, r *http.Request) {

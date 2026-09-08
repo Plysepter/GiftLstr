@@ -4,7 +4,7 @@
 	import { confetti } from '../confetti.js';
 	import Icon from '../Icon.svelte';
 
-	let { onadd }: { onadd: (item: { title: string; url: string; notes: string }) => Promise<boolean> | boolean | void } =
+	let { onadd, isPrivate = false }: { onadd: (item: { title: string; url: string; notes: string }) => Promise<boolean> | boolean | void; isPrivate?: boolean } =
 		$props();
 
 	let title = $state('');
@@ -99,7 +99,7 @@
 	}
 </script>
 
-<form class="composer" onsubmit={submit}>
+<form class={`composer${isPrivate ? ' is-private' : ''}`} onsubmit={submit}>
 	<div class="composer-inner">
 		{#if expanded}
 			<input
@@ -123,11 +123,11 @@
 		<div class="namerow">
 			<input
 				class="name"
-				placeholder="Gift idea…"
+				placeholder={isPrivate ? 'Add a private idea…' : 'Gift idea…'}
 				bind:value={title}
 				onfocus={() => setExpanded(true)}
 				onpaste={onNamePaste}
-				aria-label="Gift idea"
+				aria-label={isPrivate ? 'Private gift idea' : 'Gift idea'}
 			/>
 			<button
 				bind:this={addBtnEl}
@@ -157,6 +157,12 @@
 </form>
 
 <style>
+	:global(form.composer.is-private) {
+		position: static;
+		border-top: none;
+		padding: 0.5rem 0 0;
+		background: transparent;
+	}
 	.composer :global(.dot) {
 		width: 22px;
 		height: 22px;

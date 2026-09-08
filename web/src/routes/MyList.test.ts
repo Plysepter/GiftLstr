@@ -199,8 +199,10 @@ describe("MyList first-run birthday prompt", () => {
     const dlg = birthDialog(container);
     expect(within(dlg).getByText("What’s your birthday?")).toBeTruthy();
 
-    const input = within(dlg).getByLabelText("Birthday") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "05-15" } });
+    const month = within(dlg).getByLabelText("Birth month") as HTMLSelectElement;
+    const day = within(dlg).getByLabelText("Birth day") as HTMLSelectElement;
+    fireEvent.change(month, { target: { value: "05" } });
+    fireEvent.change(day, { target: { value: "15" } });
     fireEvent.submit(dlg.querySelector("form") as HTMLFormElement);
     await flush();
 

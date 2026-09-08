@@ -83,6 +83,14 @@ func main() {
 	if _, err := db.Exec(string(schema)); err != nil {
 		log.Fatalf("apply schema: %v", err)
 	}
+	// Migrations: add columns that may not exist in older databases.
+	for _, m := range []string{
+		`ALTER TABLE items ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`,
+		`ALTER TABLE items ADD COLUMN suggested_by TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE items ADD COLUMN suggested_by_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		db.Exec(m) // ignore "duplicate column" errors
+	}
 	go archiveLoop()
 	go backupLoop(context.Background(), backupConfigFromEnv(dataDir))
 
@@ -521,33 +529,53 @@ func archiveUserList(u *user, now time.Time) error {
 		if _, err := tx.Exec(`INSERT INTO lists (id, user_id, label) VALUES (?, ?, 'Active')`, newListID, u.ID); err != nil {
 			return err
 		}
-		// Carry over unclaimed, non-removed items individually so each gets a
-		// fresh UUID key.
-		rows, err := tx.Query(`SELECT title, url, notes, sort_order FROM items i
-			WHERE i.list_id = ? AND i.removed_at IS NULL AND i.id NOT IN (SELECT item_id FROM claims)`, listID)
+		// Carry over items to the new list. Each gets a fresh UUID key.
+		//   - Unclaimed public items    -> copy as public
+		//   - Claimed public items      -> stay in archive (not copied)
+		//   - Claimed private items     -> revealed to owner: copy as public
+		//   - Unclaimed private items   -> roll over: copy as private
+		//   - Claimed suggested items   -> revealed to owner: copy as public
+		//   - Unclaimed suggested items -> dropped (not rolled over)
+		rows, err := tx.Query(`SELECT i.id, i.title, i.url, i.notes, i.sort_order, i.visibility,
+				EXISTS(SELECT 1 FROM claims c WHERE c.item_id = i.id) AS claimed
+			FROM items i WHERE i.list_id = ? AND i.removed_at IS NULL`, listID)
 		if err != nil {
 			return err
 		}
 		type fieldVal struct {
-			title, url, notes string
-			sort              int
+			title, url, notes, visibility string
+			sort                           int
 		}
 		var carry []fieldVal
 		for rows.Next() {
-			var f fieldVal
-			if rows.Scan(&f.title, &f.url, &f.notes, &f.sort) == nil {
-				carry = append(carry, f)
+			var id, title, url, notes, visibility string
+			var sort int
+			var claimed bool
+			if rows.Scan(&id, &title, &url, &notes, &sort, &visibility, &claimed) != nil {
+				continue
+			}
+			switch visibility {
+			case "private", "suggested":
+				// Unclaimed private items roll over (stay private); claimed
+				// private/suggested items are revealed as public. Unclaimed
+				// suggested items are dropped.
+				if !claimed && visibility == "private" {
+					carry = append(carry, fieldVal{title, url, notes, "private", sort})
+				} else if claimed {
+					carry = append(carry, fieldVal{title, url, notes, "public", sort})
+				}
+			default: // public
+				if !claimed {
+					carry = append(carry, fieldVal{title, url, notes, visibility, sort})
+				}
 			}
 		}
 		rows.Close()
 		for _, f := range carry {
-			if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order) VALUES (?, ?, ?, ?, ?, ?)`,
-				newID(), newListID, f.title, f.url, f.notes, f.sort); err != nil {
+			if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')`,
+				newID(), newListID, f.title, f.url, f.notes, f.sort, f.visibility); err != nil {
 				return err
 			}
-		}
-		if err != nil {
-			return err
 		}
 		if err := tx.Commit(); err != nil {
 			return err

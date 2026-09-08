@@ -21,11 +21,15 @@ export interface Item {
   claimedByMe: boolean;
   /** Only present in contexts that expose the claimer (own list / archive). */
   claimedByName?: string;
+  /** "Suggested by Jane D." tag on shared private items shown to connected users. */
+  suggestedBy?: string;
 }
 
 export interface UserListResponse {
   user: Pick<User, "id" | "username" | "displayName" | "birthday" | "themeStyle">;
   items: Item[];
+  /** Owner-only private ideas (only returned when viewing your own list). */
+  privateItems?: Item[];
   isOwner: boolean;
 }
 

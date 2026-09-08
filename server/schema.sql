@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS items (
 	notes TEXT NOT NULL DEFAULT '',
 	sort_order INTEGER NOT NULL DEFAULT 0,
 	removed_at TEXT,
+	visibility TEXT NOT NULL DEFAULT 'public',
+	suggested_by TEXT NOT NULL DEFAULT '',
+	suggested_by_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

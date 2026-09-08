@@ -149,8 +149,8 @@ describe("Birthday", () => {
   it("saves birthday via PATCH /api/profile and shows green check", async () => {
     const { container } = render(Profile);
     await flush();
-    const input = container.querySelector(".bday-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "05-15" } });
+    fireEvent.change(screen.getByLabelText("Birth month"), { target: { value: "05" } });
+    fireEvent.change(screen.getByLabelText("Birth day"), { target: { value: "15" } });
     fireEvent.submit(container.querySelector("form.card") as HTMLFormElement);
     await flush();
 
@@ -166,8 +166,8 @@ describe("Birthday", () => {
     mocks.api.mockRejectedValue(new Error("boom"));
     const { container } = render(Profile);
     await flush();
-    const input = container.querySelector(".bday-input") as HTMLInputElement;
-    fireEvent.input(input, { target: { value: "05-15" } });
+    fireEvent.change(screen.getByLabelText("Birth month"), { target: { value: "05" } });
+    fireEvent.change(screen.getByLabelText("Birth day"), { target: { value: "15" } });
     fireEvent.submit(container.querySelector("form.card") as HTMLFormElement);
     await flush();
 

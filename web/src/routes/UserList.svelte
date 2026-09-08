@@ -264,6 +264,9 @@
 					<div class="body">
 						{#if item.url}<LinkPreview url={item.url} />{/if}
 						{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+						{#if item.suggestedBy}
+							<span class="badge suggested-badge">Suggested by {item.suggestedBy}</span>
+						{/if}
 						{#if revealClaimers && item.claimed && !item.claimedByMe && item.claimedByName}
 							<span class="badge claimed claim-owner-badge">claimed by {item.claimedByName}</span>
 						{/if}

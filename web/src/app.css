@@ -1166,6 +1166,13 @@ body.reordering {
   border-color: var(--line);
   background: transparent;
 }
+.badge.suggested-badge {
+  margin-top: 0.65rem;
+  width: fit-content;
+  color: var(--c-claim);
+  border-color: color-mix(in srgb, var(--c-claim) 40%, transparent);
+  background: color-mix(in srgb, var(--c-claim) 9%, transparent);
+}
 
 /* notes collapse */
 .notes-toggle {
