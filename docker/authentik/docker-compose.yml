@@ -1,0 +1,75 @@
+# Authentik stack (idp), split out of the GiftLstr compose. Services are
+# unchanged from the original combined file; only the network wiring differs.
+#
+#   docker compose -f docker/authentik/docker-compose.yml up -d
+#
+# All Authentik services (postgres/worker/server) share the default network.
+#
+# NOTE: `container_name: authentik-server` gives Authentik a stable DNS name on its
+# default network so the GiftLstr app can reach it at `http://authentik-server:9000`.
+# Remove it if something else already owns that name.
+
+services:
+  authentik-postgresql:
+    image: docker.io/library/postgres:18-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - authentik-postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
+      POSTGRES_USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
+      # Dev-default only; generate a real password with `pnpm docker:genenv`
+      # (or set AUTHENTIK_POSTGRESQL__PASSWORD) before exposing this stack.
+      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
+
+  authentik-server:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
+    restart: unless-stopped
+    command: server
+    ports:
+      - "9000:9000"
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-geoip:/geoip
+    environment: &authentik-env
+      # Dev-default only (public value). Generate a real one with
+      # `pnpm docker:genenv` (or set AUTHENTIK_SECRET_KEY) for any deployment
+      # you can't fully trust; it must stay stable across restarts.
+      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-dev-only-insecure-secret-key-change-before-production}
+      # Bootstrap account created on first boot. Sign in once with it, create
+      # the OIDC provider, then set AUTHENTIK_BOOTSTRAP_TOKEN to empty.
+      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-giftlstr-bootstrap}
+      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@example.com}
+      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-authentik}
+      AUTHENTIK_POSTGRESQL__HOST: authentik-postgresql
+      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
+      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
+      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+  authentik-worker:
+    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
+    restart: unless-stopped
+    command: authentik-worker
+    volumes:
+      - authentik-media:/media
+      - authentik-templates:/templates
+      - authentik-geoip:/geoip
+    environment: *authentik-env
+    depends_on:
+      authentik-postgresql:
+        condition: service_healthy
+
+volumes:
+  authentik-postgres: {}
+  authentik-media: {}
+  authentik-templates: {}
+  authentik-geoip: {}

@@ -1,0 +1,65 @@
+# GiftLstr app, split out of the combined compose.
+#
+#   docker compose -f docker/giftlstr/docker-compose.yml up -d --build
+#
+# Auth is provided by the separate Authentik stack (docker/authentik/). The app
+# runs on its default network; a reverse proxy (e.g. Caddy) in front proxies the
+# app's public host to the published PORT (default 8080). PORT configures both
+# the port the server listens on inside the container and the published host
+# port, so you can pick a non-colliding port on a shared Docker/overlay network.
+#
+# AUTHENTIK_ISSUER_BACKEND defaults to Authentik's stable name
+# (`http://authentik:9000/...`). That works out of the box with the combined
+# compose (one shared default network), or when Authentik is placed on the same
+# network as this app. If Authentik runs elsewhere, point
+# AUTHENTIK_ISSUER_BACKEND at wherever it is reachable.
+
+services:
+  giftlstr:
+    build:
+      context: ../..
+    entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
+    ports:
+      # PORT sets both the container's internal listen port (the server reads
+      # the PORT env, see server/main.go) and the published host port, so on a
+      # shared Docker network you can pick a port that doesn't collide with
+      # other web servers. Default 8080.
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      - DATA_DIR=/data
+      # HTTP listen port (default 8080). Must match the container side of the
+      # published port above; the reverse proxy targets this port on the app.
+      - PORT=${PORT:-8080}
+      # Authentik OIDC credentials (see README). The issuer is the public URL
+      # browsers hit (e.g. https://auth.example.com/application/o/giftlstr/)
+      # and is what the app validates the token's `iss` claim against.
+      - AUTHENTIK_ISSUER=${AUTHENTIK_ISSUER:-http://localhost:9000/application/o/giftlstr/}
+      # Where the server fetches discovery/JWKS/token from. Defaults to
+      # Authentik's stable container name on the shared network (the browser
+      # never sees this address).
+      - AUTHENTIK_ISSUER_BACKEND=${AUTHENTIK_ISSUER_BACKEND:-http://authentik:9000/application/o/giftlstr/}
+      # Leave empty to boot in "sign-in not configured" mode; fill after
+      # creating the OIDC provider in Authentik (see README).
+      - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-}
+      # Authentik user attribute (or mapped OIDC claim) carrying the MM-DD
+      # birthday, used to set the birthday list reset on first login.
+      - AUTHENTIK_BIRTHDAY_CLAIM=${AUTHENTIK_BIRTHDAY_CLAIM:-birthday}
+      # Authentik subjects (UUIDs, comma-separated) granted admin. Required to
+      # bootstrap the first admin; changes apply on the listed users' next
+      # request. Empty is allowed so the app can start for the first login.
+      - ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
+      # Automatic backups (see README). Backups are written to <data>/daily and
+      # <data>/weekly. Disabled by default.
+      - GIFT_AUTO_BACKUP_ENABLED=${GIFT_AUTO_BACKUP_ENABLED:-0}
+      - GIFT_AUTO_BACKUP_INTERVAL=${GIFT_AUTO_BACKUP_INTERVAL:-24h}
+      - GIFT_AUTO_BACKUP_KEEP_DAILY=${GIFT_AUTO_BACKUP_KEEP_DAILY:-7}
+      - GIFT_AUTO_BACKUP_KEEP_WEEKLY=${GIFT_AUTO_BACKUP_KEEP_WEEKLY:-4}
+      - GIFT_BACKUP_DIR=${GIFT_BACKUP_DIR:-}
+      # Per-IP rate limiting (disabled by default; see README).
+      - GIFT_RATE_LIMIT_ENABLED=${GIFT_RATE_LIMIT_ENABLED:-0}
+      - GIFT_RATE_LIMIT=${GIFT_RATE_LIMIT:-120}
+      - GIFT_RATE_LIMIT_STRICT=${GIFT_RATE_LIMIT_STRICT:-30}
+      - GIFT_RATE_LIMIT_WINDOW=${GIFT_RATE_LIMIT_WINDOW:-1m}
+    volumes:
+      - ../../data:/data
+    restart: unless-stopped

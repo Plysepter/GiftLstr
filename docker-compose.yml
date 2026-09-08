@@ -1,121 +1,26 @@
-services:
-  giftlstr:
-    build:
-      context: .
-    user: "10001:20000"
-    entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
-    ports:
-      - "8080:8080"
-    environment:
-      - DATA_DIR=/data
-      # Authentik OIDC credentials (see README). The issuer is the public URL
-      # browsers hit (e.g. https://auth.example.com/application/o/giftlstr/)
-      # and is what the app validates the token's `iss` claim against.
-      - AUTHENTIK_ISSUER=${AUTHENTIK_ISSUER:-http://localhost:9000/application/o/giftlstr/}
-      # Where the server fetches discovery/JWKS/token from. Defaults to the
-      # compose-internal `server` DNS name since Authentik and GiftLstr share
-      # the same network (the browser never sees this address). Only needs a
-      # different value when Authentik runs elsewhere.
-      - AUTHENTIK_ISSUER_BACKEND=${AUTHENTIK_ISSUER_BACKEND:-http://server:9000/application/o/giftlstr/}
-      # Leave empty to boot in "sign-in not configured" mode; fill after
-      # creating the OIDC provider in Authentik (see README).
-      - AUTHENTIK_CLIENT_ID=${AUTHENTIK_CLIENT_ID:-}
-      # Authentik user attribute (or mapped OIDC claim) carrying the MM-DD
-      # birthday, used to set the birthday list reset on first login.
-      - AUTHENTIK_BIRTHDAY_CLAIM=${AUTHENTIK_BIRTHDAY_CLAIM:-birthday}
-      # Authentik subjects (UUIDs, comma-separated) granted admin. Required to
-      # bootstrap the first admin; changes apply on the listed users' next
-      # request. Empty is allowed so the app can start for the first login.
-      - ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
-      # Automatic backups (see README). Backups are written to <data>/daily and
-      # <data>/weekly. Disabled by default.
-      - GIFT_AUTO_BACKUP_ENABLED=${GIFT_AUTO_BACKUP_ENABLED:-0}
-      - GIFT_AUTO_BACKUP_INTERVAL=${GIFT_AUTO_BACKUP_INTERVAL:-24h}
-      - GIFT_AUTO_BACKUP_KEEP_DAILY=${GIFT_AUTO_BACKUP_KEEP_DAILY:-7}
-      - GIFT_AUTO_BACKUP_KEEP_WEEKLY=${GIFT_AUTO_BACKUP_KEEP_WEEKLY:-4}
-      - GIFT_BACKUP_DIR=${GIFT_BACKUP_DIR:-}
-      # Per-IP rate limiting (disabled by default; see README).
-      - GIFT_RATE_LIMIT_ENABLED=${GIFT_RATE_LIMIT_ENABLED:-0}
-      - GIFT_RATE_LIMIT=${GIFT_RATE_LIMIT:-120}
-      - GIFT_RATE_LIMIT_STRICT=${GIFT_RATE_LIMIT_STRICT:-30}
-      - GIFT_RATE_LIMIT_WINDOW=${GIFT_RATE_LIMIT_WINDOW:-1m}
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
-
-  postgresql:
-    image: docker.io/library/postgres:16-alpine
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    volumes:
-      - authentik-postgres:/var/lib/postgresql/data
-    environment:
-      POSTGRES_DB: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
-      POSTGRES_USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
-      # Dev-default only; generate a real password with `pnpm docker:genenv`
-      # (or set AUTHENTIK_POSTGRESQL__PASSWORD) before exposing this stack.
-      POSTGRES_PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
-
-  redis:
-    image: docker.io/library/redis:alpine
-    restart: unless-stopped
-    command: --save 60 1 --loglevel warning
-    volumes:
-      - authentik-redis:/data
-
-  server:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
-    restart: unless-stopped
-    command: server
-    ports:
-      - "9000:9000"
-    volumes:
-      - authentik-media:/media
-      - authentik-templates:/templates
-      - authentik-geoip:/geoip
-    environment: &authentik-env
-      # Dev-default only (public value). Generate a real one with
-      # `pnpm docker:genenv` (or set AUTHENTIK_SECRET_KEY) for any deployment
-      # you can't fully trust; it must stay stable across restarts.
-      AUTHENTIK_SECRET_KEY: ${AUTHENTIK_SECRET_KEY:-dev-only-insecure-secret-key-change-before-production}
-      # Bootstrap account created on first boot. Sign in once with it, create
-      # the OIDC provider, then set AUTHENTIK_BOOTSTRAP_TOKEN to empty.
-      AUTHENTIK_BOOTSTRAP_TOKEN: ${AUTHENTIK_BOOTSTRAP_TOKEN:-giftlstr-bootstrap}
-      AUTHENTIK_BOOTSTRAP_EMAIL: ${AUTHENTIK_BOOTSTRAP_EMAIL:-admin@example.com}
-      AUTHENTIK_BOOTSTRAP_PASSWORD: ${AUTHENTIK_BOOTSTRAP_PASSWORD:-authentik}
-      AUTHENTIK_POSTGRESQL__HOST: postgresql
-      AUTHENTIK_POSTGRESQL__NAME: ${AUTHENTIK_POSTGRESQL__NAME:-authentik}
-      AUTHENTIK_POSTGRESQL__USER: ${AUTHENTIK_POSTGRESQL__USER:-authentik}
-      AUTHENTIK_POSTGRESQL__PASSWORD: ${AUTHENTIK_POSTGRESQL__PASSWORD:-authentik}
-      AUTHENTIK_REDIS__HOST: redis
-    depends_on:
-      postgresql:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
-  worker:
-    image: ghcr.io/goauthentik/server:${AUTHENTIK_TAG:-latest}
-    restart: unless-stopped
-    command: worker
-    volumes:
-      - authentik-media:/media
-      - authentik-templates:/templates
-      - authentik-geoip:/geoip
-    environment: *authentik-env
-    depends_on:
-      postgresql:
-        condition: service_healthy
-      redis:
-        condition: service_started
-
-volumes:
-  authentik-postgres: {}
-  authentik-redis: {}
-  authentik-media: {}
-  authentik-templates: {}
-  authentik-geoip: {}
+# Combined GiftLstr + Authentik stack. This file simply ingests the two
+# split-out compose files (docker/giftlstr/ and docker/authentik/) so consumers
+# can run everything with a single `docker compose up` instead of bringing up
+# each stack separately.
+#
+#   docker compose -f docker-compose.yml up -d --build
+#
+# Equivalent to running the two sub-stacks individually:
+#
+#   docker compose -f docker/authentik/docker-compose.yml up -d
+#   docker compose -f docker/giftlstr/docker-compose.yml up -d --build
+#
+# Config is driven by the same environment variables as the split-out files
+# (see .env / README). PORT (default 8080) sets both the app's container
+# listen port and its published host port, letting you avoid collisions with
+# other web servers on a shared Docker network.
+#
+# All services share the combined stack's default network, so the app reaches
+# Authentik at `http://authentik:9000` (the `container_name`) out of the box.
+# A reverse proxy (e.g. Caddy) in front proxies public hosts to the app's
+# published PORT and to Authentik's published 9000. Relative build/data paths
+# in the included files resolve against their own directories, so `../..` still
+# points at this repo root.
+include:
+  - path: docker/giftlstr/docker-compose.yml
+  - path: docker/authentik/docker-compose.yml
