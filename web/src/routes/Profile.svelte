@@ -39,19 +39,40 @@
 	];
 
 	let birthday = $state('');
+	let birthMonth = $state('');
+	let birthDay = $state('');
 	let birthState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
+
+	const bdayMonths = [
+		{ v: '', l: 'Month' },
+		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
+		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
+		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
+		{ v: '10', l: 'October' }, { v: '11', l: 'November' }, { v: '12', l: 'December' }
+	];
+	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
 
 	$effect(() => {
 		const u = $user;
 		if (u) {
 			birthday = u.birthday;
+			const parts = birthday.split('-');
+			if (parts.length === 2 && parts[0] && parts[1]) {
+				birthMonth = parts[0];
+				birthDay = String(parseInt(parts[1], 10));
+			} else {
+				birthMonth = '';
+				birthDay = '';
+			}
 		}
 	});
 
 	async function saveBirthday(e: SubmitEvent): Promise<void> {
 		e.preventDefault();
 		if (birthState === 'saving') return;
+		if (!birthMonth || !birthDay) return;
 		birthState = 'saving';
+		birthday = `${birthMonth}-${birthDay.padStart(2, '0')}`;
 		try {
 			await api('/api/profile', { method: 'PATCH', body: { birthday } });
 			user.update((u) => (u ? { ...u, birthday } : u));
@@ -62,7 +83,23 @@
 			setTimeout(() => (birthState = 'idle'), 2000);
 		}
 	}
-	const birthdayPattern = '\\d{1,2}(-|/)\\d{1,2}|\\d{4}-\\d{2}-\\d{2}';
+
+	async function clearBirthday(): Promise<void> {
+		if (birthState === 'saving') return;
+		birthState = 'saving';
+		try {
+			await api('/api/profile', { method: 'PATCH', body: { birthday: '01-01' } });
+			birthday = '';
+			birthMonth = '';
+			birthDay = '';
+			user.update((u) => (u ? { ...u, birthday: '' } : u));
+			birthState = 'done';
+			setTimeout(() => (birthState = 'idle'), 1500);
+		} catch {
+			birthState = 'error';
+			setTimeout(() => (birthState = 'idle'), 2000);
+		}
+	}
 
 	// ---------- connect with others ----------
 	let shareEnabled = $state(false);
@@ -190,30 +227,36 @@
 		<h2 class="sect">Birthday</h2>
 		<p class="muted">One week after your birthday (and Christmas), your list archives and unclaimed items carry over.</p>
 		<div class="bday-row">
-			<input
-				class="bday-input"
-				placeholder="MM-DD"
-				bind:value={birthday}
-				required
-				pattern={birthdayPattern}
-				title="e.g. 05-15 (also accepts 5/15 or 2026-05-15)"
-			/>
-			<button
-				class="bday-btn"
-				class:done={birthState === 'done'}
-				class:err={birthState === 'error'}
-				type="submit"
-				disabled={birthState === 'saving'}
-				aria-label="Save birthday"
-			>
-				{#if birthState === 'done'}
-					<Icon name="check" size={18} strokeWidth={3} />
-				{:else if birthState === 'error'}
-					<Icon name="x" size={18} strokeWidth={3} />
-				{:else}
-					Save
+			<div class="bday-selects">
+				<select class="bday-select" bind:value={birthMonth} aria-label="Birth month">
+					{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
+				</select>
+				<select class="bday-select" bind:value={birthDay} aria-label="Birth day">
+					<option value="">Day</option>
+					{#each bdayDays as d}<option value={d}>{d}</option>{/each}
+				</select>
+			</div>
+			<div class="bday-btns">
+				<button
+					class="bday-btn"
+					class:done={birthState === 'done'}
+					class:err={birthState === 'error'}
+					type="submit"
+					disabled={birthState === 'saving' || !birthMonth || !birthDay}
+					aria-label="Save birthday"
+				>
+					{#if birthState === 'done'}
+						<Icon name="check" size={18} strokeWidth={3} />
+					{:else if birthState === 'error'}
+						<Icon name="x" size={18} strokeWidth={3} />
+					{:else}
+						Save
+					{/if}
+				</button>
+				{#if birthday}
+					<button class="secondary bday-btn" type="button" onclick={() => void clearBirthday()}>Clear</button>
 				{/if}
-			</button>
+			</div>
 		</div>
 	</form>
 
@@ -262,8 +305,10 @@
 	}
 	.copy-btn { width: 46px; height: 46px; padding: 0; display: grid; place-items: center; flex-shrink: 0; }
 	.copy-btn.copied { background-color: #15803d; border-color: #15803d; color: #fff; }
-	.bday-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; margin-top: 0.9rem; }
-	.bday-input { font-size: 1rem; }
+	.bday-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.9rem; }
+	.bday-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; flex: 1; min-width: 200px; }
+	.bday-select { font-size: 1rem; }
+	.bday-btns { display: flex; gap: 0.5rem; }
 	.bday-btn {
 min-width: 74px; height: 46px; padding: 0 1.1rem;
 		display: grid; place-items: center; position: relative;

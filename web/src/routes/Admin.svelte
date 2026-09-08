@@ -123,8 +123,11 @@
 	async function saveBirthday(u: AdminUser): Promise<void> {
 		error = '';
 		saved = null;
+		if (!editBirthMonth || !editBirthDay) return;
+		const bday = `${editBirthMonth}-${editBirthDay.padStart(2, '0')}`;
 		try {
-			await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: { birthday: u.birthday } });
+			await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: { birthday: bday } });
+			u.birthday = bday;
 			saved = u.id;
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
@@ -309,7 +312,42 @@
 	let modalPageConns = $derived(modalConns.slice((modalPage - 1) * modalPer, modalPage * modalPer));
 
 	let me = $derived($user);
-	const birthdayPattern = '\\d{1,2}(-|/)\\d{1,2}';
+
+	const bdayMonths = [
+		{ v: '', l: 'Month' },
+		{ v: '01', l: 'Jan' }, { v: '02', l: 'Feb' }, { v: '03', l: 'Mar' },
+		{ v: '04', l: 'Apr' }, { v: '05', l: 'May' }, { v: '06', l: 'Jun' },
+		{ v: '07', l: 'Jul' }, { v: '08', l: 'Aug' }, { v: '09', l: 'Sep' },
+		{ v: '10', l: 'Oct' }, { v: '11', l: 'Nov' }, { v: '12', l: 'Dec' }
+	];
+	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
+	let editBirthMonth = $state('');
+	let editBirthDay = $state('');
+
+	function parseBday(b: string): { m: string; d: string } {
+		const parts = b.split('-');
+		if (parts.length === 2 && parts[0] && parts[1]) {
+			return { m: parts[0], d: String(parseInt(parts[1], 10)) };
+		}
+		return { m: '', d: '' };
+	}
+
+	function startEditBday(u: AdminUser): void {
+		const p = parseBday(u.birthday);
+		editBirthMonth = p.m;
+		editBirthDay = p.d;
+	}
+
+	function initBdayEdits(): void {
+		for (const u of users) {
+			if (!editBirthMonth && !editBirthDay) {
+				const p = parseBday(u.birthday);
+				editBirthMonth = p.m;
+				editBirthDay = p.d;
+				break;
+			}
+		}
+	}
 </script>
 
 {#if !me?.isAdmin}
@@ -419,21 +457,22 @@
 				</p>
 				<div class="card-foot">
 					<form
-						class="row"
+						class="row bday-form"
 						onsubmit={(e) => {
 							e.preventDefault();
 							void saveBirthday(u);
 						}}
 					>
-						<input
-							style="max-width: 140px;"
-							bind:value={u.birthday}
-							pattern={birthdayPattern}
-							title="MM-DD"
-							placeholder="MM-DD"
-							aria-label="Birthday for {u.displayName}"
-						/>
-						<button class="secondary">Save birthday</button>
+						<div class="bday-selects">
+							<select class="bday-select" bind:value={editBirthMonth} aria-label="Birthday month for {u.displayName}" onfocus={() => startEditBday(u)}>
+								{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
+							</select>
+							<select class="bday-select" bind:value={editBirthDay} aria-label="Birthday day for {u.displayName}" onfocus={() => startEditBday(u)}>
+								<option value="">Day</option>
+								{#each bdayDays as d}<option value={d}>{d}</option>{/each}
+							</select>
+						</div>
+						<button class="secondary" disabled={!editBirthMonth || !editBirthDay}>Save birthday</button>
 						{#if saved === u.id}<span class="muted">Saved.</span>{/if}
 					</form>
 					<div class="footbtns">
@@ -691,4 +730,7 @@
 	.menu-pop button:disabled { opacity: .45; cursor: not-allowed; }
 	.menu-pop button.menu-danger { color: #F87171; }
 	.menu-pop button.menu-danger:hover:not(:disabled) { background: rgba(248, 113, 113, .1); }
+	.bday-form { flex-wrap: wrap; }
+	.bday-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; min-width: 160px; }
+	.bday-select { font-size: 0.9rem; }
 </style>

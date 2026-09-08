@@ -42,9 +42,19 @@
 
 	// ---------- first-run birthday prompt ----------
 	let birthModalEl: HTMLDialogElement | undefined = $state();
-	let firstBirthday = $state('');
+	let birthMonth = $state('');
+	let birthDay = $state('');
 	let birthSaving = $state(false);
 	let showBirthModal = $derived($user?.isNew === true);
+
+	const bdayMonths = [
+		{ v: '', l: 'Month' },
+		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
+		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
+		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
+		{ v: '10', l: 'October' }, { v: '11', l: 'November' }, { v: '12', l: 'December' }
+	];
+	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
 
 	$effect(() => {
 		if (showBirthModal && birthModalEl && !birthModalEl.open) birthModalEl.showModal();
@@ -54,9 +64,9 @@
 	async function saveFirstBirthday(): Promise<void> {
 		if (birthSaving) return;
 		birthSaving = true;
-		const b = firstBirthday.trim();
 		try {
-			if (b) {
+			if (birthMonth && birthDay) {
+				const b = `${birthMonth}-${birthDay.padStart(2, '0')}`;
 				await api('/api/profile', { method: 'PATCH', body: { birthday: b } });
 				user.update((u) => (u ? { ...u, birthday: b, isNew: false } : u));
 			} else {
@@ -490,13 +500,15 @@
 					Your list automatically archives around your birthday (and Christmas), carrying unclaimed
 					items over to a fresh list. This step is optional — you can always set it later in your profile.
 				</p>
-				<input
-					class="birth-input"
-					placeholder="MM-DD (optional)"
-					aria-label="Birthday"
-					autocomplete="off"
-					bind:value={firstBirthday}
-				/>
+				<div class="bday-selects">
+					<select class="birth-select" bind:value={birthMonth} aria-label="Birth month">
+						{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
+					</select>
+					<select class="birth-select" bind:value={birthDay} aria-label="Birth day">
+						<option value="">Day</option>
+						{#each bdayDays as d}<option value={d}>{d}</option>{/each}
+					</select>
+				</div>
 				<div class="dlg-menu">
 					<button class="secondary" type="button" onclick={() => (showBirthModal = false)}>Skip</button>
 					<button type="submit" disabled={birthSaving}>Save</button>
@@ -573,5 +585,6 @@
 	}
 	dialog.birth-dlg[open] .dlg-card { animation: dlg-in 300ms cubic-bezier(.2,.9,.3,1.2); }
 	dialog.birth-dlg::backdrop { background: rgba(4,6,12,.5); backdrop-filter: blur(6px); }
-	.birth-input { margin-top: 1rem; }
+	.bday-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem; }
+	.birth-select { font-size: 1rem; }
 </style>
