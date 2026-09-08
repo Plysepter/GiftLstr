@@ -295,7 +295,7 @@ func scanUser(row *sql.Row) (*user, error) {
 	if theme.Valid {
 		u.ThemeStyle = theme.String
 	} else {
-		u.ThemeStyle = "kinetic"
+		u.ThemeStyle = "aurora"
 	}
 	return &u, nil
 }
@@ -333,7 +333,7 @@ func insertUserAndList(authID, username, displayName string, isAdmin bool, birth
 	uid := newID()
 	insert := func(name string) (sql.Result, error) {
 		return tx.Exec(`INSERT INTO users (id, auth_user_id, username, display_name, is_admin, birthday, theme_style, share_code)
-			VALUES (?, ?, ?, ?, ?, ?, 'kinetic', '')
+			VALUES (?, ?, ?, ?, ?, ?, 'aurora', '')
 			ON CONFLICT(auth_user_id) DO NOTHING`,
 			uid, authID, name, displayName, isAdmin, birthday)
 	}
@@ -354,7 +354,7 @@ func insertUserAndList(authID, username, displayName string, isAdmin bool, birth
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, ThemeStyle: "kinetic", ShareCode: "", IsNew: true}, nil
+	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, ThemeStyle: "aurora", ShareCode: "", IsNew: true}, nil
 }
 
 // provisionUser creates the local user row and active list on first login.
@@ -572,7 +572,7 @@ func archiveLoop() {
 				if theme.Valid {
 					u.ThemeStyle = theme.String
 				} else {
-					u.ThemeStyle = "kinetic"
+					u.ThemeStyle = "aurora"
 				}
 				us = append(us, &u)
 			}

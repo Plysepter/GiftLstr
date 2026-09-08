@@ -178,14 +178,14 @@ describe("Birthday", () => {
 });
 
 describe("Appearance", () => {
-  it("lists Kinetic before Aurora as the default style", async () => {
+  it("lists Aurora first as the default style", async () => {
     render(Profile);
     await flush();
     const styles = within(screen.getByRole("radiogroup", { name: "Theme style" })).getAllByRole(
       "button",
     );
     const labels = styles.map((b) => b.textContent ?? "");
-    expect(labels[0]).toMatch(/Kinetic/);
-    expect(labels.join(" ")).toMatch(/Kinetic.*Aurora/);
+    expect(labels[0]).toMatch(/Aurora/);
+    expect(labels.join(" ")).toMatch(/Aurora.*Kinetic/);
   });
 });

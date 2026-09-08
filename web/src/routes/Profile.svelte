@@ -8,8 +8,8 @@
 	import { copyToClipboard } from '../lib/listText.js';
 
 	const styleOptions: ReadonlyArray<{ value: ThemeStyle; label: string; hint: string }> = [
-		{ value: 'kinetic', label: 'Kinetic', hint: 'Minimal' },
 		{ value: 'aurora', label: 'Aurora', hint: 'Cool' },
+		{ value: 'kinetic', label: 'Kinetic', hint: 'Minimal' },
 		{ value: 'aurora-warm', label: 'Warm', hint: 'Sunset' },
 		{ value: 'ocean', label: 'Ocean', hint: 'Blue' },
 		{ value: 'forest', label: 'Forest', hint: 'Green' },

@@ -36,6 +36,14 @@ export const prefs = $state<{ style: ThemeStyle; events: boolean; useOwnerTheme:
   loadPrefs(),
 );
 
+/**
+ * Active style override set while viewing another user's list that opts into
+ * "show their theme". apply() honours it ahead of prefs.style so that light/dark
+ * toggles (which call apply()) re-theme the brightness without clobbering the
+ * gift recipient's chosen palette.
+ */
+export const ownerStyleOverride = $state<{ value: ThemeStyle | null }>({ value: null });
+
 /** Set once App knows the user's birthday; drives event theming. */
 export const season = $state<{ kind: Season; days: number; label: string }>({
   kind: "none",
@@ -103,7 +111,8 @@ function systemDark(): boolean {
 export function apply(): void {
   const resolved = theme.choice === "system" ? (systemDark() ? "dark" : "light") : theme.choice;
   document.documentElement.dataset.theme = resolved;
-  document.documentElement.dataset.style = prefs.style;
+  const style = ownerStyleOverride.value !== null ? ownerStyleOverride.value : prefs.style;
+  document.documentElement.dataset.style = style;
   document.documentElement.dataset.season = season.kind;
 }
 

@@ -46,10 +46,12 @@ vi.mock("../lib/theme.svelte.js", () => ({
   season: { kind: "none", days: 0, label: "" },
   seasonOverride: { value: "auto" },
   prefs: { style: "aurora", events: true, useOwnerTheme: true },
+  ownerStyleOverride: { value: null },
   ALL_STYLES: ["aurora"],
   resolveSeason: () => mocks.seasonResult,
   setSeasonOverride: vi.fn(),
   setTheme: vi.fn(),
+  apply: vi.fn(),
 }));
 vi.mock("../lib/listText.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/listText.js")>();

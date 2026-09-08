@@ -12,7 +12,8 @@
 	import { confetti } from '../lib/confetti.js';
 	import { isOfflineError } from '../lib/offlineQueue.js';
 	import { network } from '../lib/network.svelte.js';
-	import { season, prefs, resolveSeason, ALL_STYLES } from '../lib/theme.svelte.js';
+	import { season, prefs, resolveSeason, ALL_STYLES, ownerStyleOverride, apply } from '../lib/theme.svelte.js';
+	import type { ThemeStyle } from '../lib/theme.svelte.js';
 	import { untrack } from 'svelte';
 	import { buildListText, copyToClipboard } from '../lib/listText.js';
 
@@ -32,7 +33,6 @@
 	);
 
 	let prevSeason: { kind: typeof season.kind; days: number; label: string; dataset: string } | null = null;
-	let prevStyle: string | null = null;
 
 	// $effect.pre: the owner's season/style must land before the owner's items render,
 	// otherwise the page paints one frame in the viewer's theme and then "pops" to
@@ -54,9 +54,11 @@
 				document.documentElement.dataset.season = ps.dataset;
 				prevSeason = null;
 			}
-			if (prevStyle !== null) {
-				document.documentElement.dataset.style = prevStyle;
-				prevStyle = null;
+			if (untrack(() => ownerStyleOverride.value) !== null) {
+				untrack(() => {
+					ownerStyleOverride.value = null;
+				});
+				apply();
 			}
 			return;
 		}
@@ -85,17 +87,22 @@
 			}
 		}
 
-		// Style: respect viewer's light/dark, only dataset
+		// Style: respect viewer's light/dark, and the owner's palette via the
+		// ownerStyleOverride, so a theme toggle re-skins brightness only.
 		const ownerStyle = untrack(() => owner.themeStyle);
 		const useOwner = untrack(() => prefs.useOwnerTheme);
 		const wantsOwnerStyle = useOwner && ownerStyle && untrack(() => ALL_STYLES.includes(ownerStyle as never));
-		if (wantsOwnerStyle) {
-			if (prevStyle === null) prevStyle = untrack(() => document.documentElement.dataset.style ?? prefs.style);
-			const cur = untrack(() => document.documentElement.dataset.style);
-			if (cur !== ownerStyle) document.documentElement.dataset.style = ownerStyle!;
-		} else if (prevStyle !== null) {
-			document.documentElement.dataset.style = prevStyle;
-			prevStyle = null;
+		const activeOverride = untrack(() => ownerStyleOverride.value);
+		if (wantsOwnerStyle && activeOverride !== ownerStyle) {
+			untrack(() => {
+				ownerStyleOverride.value = ownerStyle as ThemeStyle;
+			});
+			apply();
+		} else if (!wantsOwnerStyle && activeOverride !== null) {
+			untrack(() => {
+				ownerStyleOverride.value = null;
+			});
+			apply();
 		}
 
 		return () => {
@@ -109,9 +116,11 @@
 				document.documentElement.dataset.season = ps.dataset;
 				prevSeason = null;
 			}
-			if (prevStyle !== null) {
-				document.documentElement.dataset.style = prevStyle;
-				prevStyle = null;
+			if (untrack(() => ownerStyleOverride.value) !== null) {
+				untrack(() => {
+					ownerStyleOverride.value = null;
+				});
+				apply();
 			}
 		};
 	});

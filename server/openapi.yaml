@@ -68,7 +68,7 @@ components:
           description: Reset date for the birthday list, formatted MM-DD.
         themeStyle:
           type: string
-          description: Active theme, defaults to "kinetic".
+          description: Active theme, defaults to "aurora".
         shareCode:
           type: string
           description: Code others can use to connect; empty when sharing is disabled.

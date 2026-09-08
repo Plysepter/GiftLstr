@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
 	display_name TEXT NOT NULL,
 	is_admin INTEGER NOT NULL DEFAULT 0,
 	birthday TEXT NOT NULL DEFAULT '',
-	theme_style TEXT NOT NULL DEFAULT 'kinetic',
+	theme_style TEXT NOT NULL DEFAULT 'aurora',
 	share_code TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

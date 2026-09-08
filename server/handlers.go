@@ -321,7 +321,7 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if owner.ThemeStyle == "" {
-		owner.ThemeStyle = "kinetic"
+		owner.ThemeStyle = "aurora"
 	}
 	listID, err := activeListID(ownerID)
 	if err != nil {

@@ -36,14 +36,14 @@ test.describe('first run', () => {
 		await expect(dialog).not.toBeVisible();
 	});
 
-	test('the default theme style is kinetic', async ({ page }) => {
+	test('the default theme style is aurora', async ({ page }) => {
 		await login(page, NEW_USER);
 		await page.goto('/#/profile');
-		// Kinetic comes first and is highlighted as the active style.
-		const kinetic = page.getByRole('button', { name: /Kinetic/ });
-		await expect(kinetic).toBeVisible();
-		await expect(kinetic).toHaveClass(/on/);
+		// Aurora comes first and is highlighted as the active style.
+		const aurora = page.getByRole('button', { name: /Aurora/ });
+		await expect(aurora).toBeVisible();
+		await expect(aurora).toHaveClass(/on/);
 		const first = page.getByRole('radiogroup', { name: 'Theme style' }).getByRole('button').first();
-		await expect(first).toContainText('Kinetic');
+		await expect(first).toContainText('Aurora');
 	});
 });
