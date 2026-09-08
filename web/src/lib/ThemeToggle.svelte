@@ -7,7 +7,13 @@
 		btn?.classList.remove('spin');
 		void btn?.offsetWidth;
 		btn?.classList.add('spin');
-		setTheme(theme.choice === 'dark' ? 'light' : 'dark');
+		const resolved =
+			theme.choice === 'system'
+				? matchMedia('(prefers-color-scheme: dark)').matches
+					? 'dark'
+					: 'light'
+				: theme.choice;
+		setTheme(resolved === 'dark' ? 'light' : 'dark');
 	}
 
 	const resolved = $derived(
