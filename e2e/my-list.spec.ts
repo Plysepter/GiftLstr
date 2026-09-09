@@ -12,9 +12,12 @@ test.describe('my list (owner)', () => {
 	test('owner can add an item to their list', async ({ page }) => {
 		await login(page, ALICE);
 		await page.goto('/');
-		await page.getByLabel('Gift idea').click();
-		await page.getByLabel('Gift idea').fill('E2E Teapot');
-		const addBtn = page.getByRole('button', { name: 'Add item' });
+		// The private composer renders a second input ("Private gift idea"); scope
+		// to the main (non-private) composer.
+		const composer = page.locator('form.composer:not(.is-private)');
+		await composer.getByLabel('Gift idea').click();
+		await composer.getByLabel('Gift idea').fill('E2E Teapot');
+		const addBtn = composer.getByRole('button', { name: 'Add item' });
 		await expect(addBtn).toBeEnabled({ timeout: 5000 });
 		console.log('Add button enabled, clicking');
 		const [resp] = await Promise.all([
@@ -43,9 +46,10 @@ test.describe('my list (owner)', () => {
 		await login(page, ALICE);
 		page.on('dialog', (d) => void d.accept());
 		await page.goto('/');
-		await page.getByPlaceholder('Gift idea').click();
-		await page.getByPlaceholder('Gift idea').fill('E2E Removable');
-		await page.getByRole('button', { name: 'Add item' }).click();
+		const composer = page.locator('form.composer:not(.is-private)');
+		await composer.getByPlaceholder('Gift idea').click();
+		await composer.getByPlaceholder('Gift idea').fill('E2E Removable');
+		await composer.getByRole('button', { name: 'Add item' }).click();
 		const card = page.locator('.card', { hasText: 'E2E Removable' });
 		await expect(card).toBeVisible();
 		// Open actions on mobile / hover
