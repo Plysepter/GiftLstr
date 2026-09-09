@@ -44,9 +44,12 @@ services:
       # Authentik user attribute (or mapped OIDC claim) carrying the MM-DD
       # birthday, used to set the birthday list reset on first login.
       - AUTHENTIK_BIRTHDAY_CLAIM=${AUTHENTIK_BIRTHDAY_CLAIM:-birthday}
-      # Authentik subjects (UUIDs, comma-separated) granted admin. Required to
-      # bootstrap the first admin; changes apply on the listed users' next
-      # request. Empty is allowed so the app can start for the first login.
+      # Authentik subjects granted admin (comma-separated). NOTE: these are
+      # the OIDC `sub` values, which Authentik hashes by default (SHA-256 of
+      # the user UUID) — NOT the admin-UI UUIDs. Read the actual value from
+      # the users.auth_user_id column (see README). Required to bootstrap the
+      # first admin; changes apply on the listed users' next request. Empty is
+      # allowed so the app can start for the first login.
       - ADMIN_USER_IDS=${ADMIN_USER_IDS:-}
       # Automatic backups (see README). Backups are written to <data>/daily and
       # <data>/weekly. Disabled by default.

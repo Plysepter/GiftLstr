@@ -41,10 +41,7 @@ func TestMain(m *testing.M) {
 		if authID == "" {
 			return nil, fmt.Errorf("no session token")
 		}
-		var u user
-		err := db.QueryRow(`SELECT id, auth_user_id, username, display_name, is_admin, birthday FROM users WHERE auth_user_id = ?`, authID).
-			Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday)
-		return &u, err
+		return scanUser(db.QueryRow(`SELECT `+userCols+` FROM users WHERE auth_user_id = ?`, authID))
 	}
 
 	code := m.Run()
@@ -102,7 +99,7 @@ func seedUser(t *testing.T, authID, username string, isAdmin bool) *user {
 	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label) VALUES (?, ?, 'Active')`, newID(), id); err != nil {
 		t.Fatalf("seed list: %v", err)
 	}
-	return &user{ID: id, AuthUserID: authID, Username: username, DisplayName: username, IsAdmin: isAdmin, Birthday: "01-01"}
+	return &user{ID: id, AuthUserID: authID, Username: username, DisplayName: username, IsAdmin: isAdmin, Birthday: "01-01", AllowSuggestions: true}
 }
 
 func activeList(t *testing.T, userID string) string {
@@ -179,6 +176,112 @@ func TestProfileUpdateBirthday(t *testing.T) {
 	mustStatus(t, w, http.StatusBadRequest)
 	w, _ = doJSON(t, u, http.MethodPatch, "/api/profile", body{"birthday": "13-99"})
 	mustStatus(t, w, http.StatusBadRequest)
+}
+
+func TestProfileUpdateHolidayResetAndSuggestions(t *testing.T) {
+	u := seedUser(t, "c_profile_hol", "profile_hol_user", false)
+	u.ThemeStyle = "aurora"
+
+	_, resp := doJSON(t, u, http.MethodPatch, "/api/profile", body{"holidayReset": "mothers"})
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true, got %v", resp)
+	}
+	var got string
+	db.QueryRow(`SELECT holiday_reset FROM users WHERE id = ?`, u.ID).Scan(&got)
+	if got != "mothers" {
+		t.Errorf("holiday_reset = %q, want mothers", got)
+	}
+
+	// Clearing works.
+	_, resp = doJSON(t, u, http.MethodPatch, "/api/profile", body{"holidayReset": ""})
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true when clearing holidayReset, got %v", resp)
+	}
+	db.QueryRow(`SELECT holiday_reset FROM users WHERE id = ?`, u.ID).Scan(&got)
+	if got != "" {
+		t.Errorf("holiday_reset = %q, want empty after clearing", got)
+	}
+
+	// Unsupported values rejected.
+	w, _ := doJSON(t, u, http.MethodPatch, "/api/profile", body{"holidayReset": "solstice"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// allowSuggestions toggle persists.
+	_, resp = doJSON(t, u, http.MethodPatch, "/api/profile", body{"allowSuggestions": false})
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true toggling allowSuggestions, got %v", resp)
+	}
+	var flag bool
+	db.QueryRow(`SELECT allow_suggestions FROM users WHERE id = ?`, u.ID).Scan(&flag)
+	if flag {
+		t.Error("allow_suggestions should be 0 after disabling")
+	}
+
+	// An empty update is still rejected.
+	w, _ = doJSON(t, u, http.MethodPatch, "/api/profile", body{})
+	mustStatus(t, w, http.StatusBadRequest)
+}
+
+func TestAddSuggestionOnOthersList(t *testing.T) {
+	owner := seedUser(t, "c_sug_owner", "sug_owner", false)
+	viewer := seedUser(t, "c_sug_viewer", "sug_viewer", false)
+	stranger := strangerUser(t)
+	connectUsers(t, owner.ID, viewer.ID)
+
+	// Strangers may not suggest.
+	w, _ := doJSON(t, stranger, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Bob"})
+	mustStatus(t, w, http.StatusForbidden)
+
+	// Owners may not suggest to their own list.
+	w, _ = doJSON(t, owner, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Me"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// A connected viewer can suggest an item.
+	w, resp := doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Headphones", "url": "https://x.co"})
+	mustStatus(t, w, http.StatusCreated)
+	itemID, _ := resp["id"].(string)
+	if itemID == "" {
+		t.Fatal("expected a suggestion item id in response")
+	}
+	var visibility, suggestedBy, suggestedByID string
+	if err := db.QueryRow(`SELECT visibility, suggested_by, suggested_by_id FROM items WHERE id = ?`, itemID).Scan(&visibility, &suggestedBy, &suggestedByID); err != nil {
+		t.Fatal(err)
+	}
+	if visibility != "suggested" || suggestedBy != "sug_viewer" || suggestedByID != viewer.ID {
+		t.Errorf("suggestion tags = (%q, %q, %q), want (suggested, sug_viewer, %s)", visibility, suggestedBy, suggestedByID, viewer.ID)
+	}
+
+	// The owner sees the suggestion on their list.
+	_, resp = doJSON(t, owner, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	sawSuggestion := false
+	if resp["items"] != nil {
+		for _, raw := range resp["items"].([]any) {
+			it := raw.(map[string]any)
+			if it["id"].(string) == itemID && it["suggestedBy"] == "sug_viewer" {
+				sawSuggestion = true
+			}
+		}
+	}
+	if !sawSuggestion {
+		t.Error("owner should see the viewer's suggestion on their list")
+	}
+
+	// Blank title rejected.
+	w, _ = doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "  "})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// Unknown owner 404s (even for an admin who bypasses the canView check).
+	admin := seedUser(t, "c_sug_admin", "sug_admin", true)
+	w, _ = doJSON(t, admin, http.MethodPost, "/api/users/00000000-0000-0000-0000-000000000000/suggestions", body{"title": "Ghost"})
+	mustStatus(t, w, http.StatusNotFound)
+
+	// Disabled suggestions are enforced server-side.
+	db.Exec(`UPDATE users SET allow_suggestions = 0 WHERE id = ?`, viewer.ID)
+	w, resp = doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Nope"})
+	mustStatus(t, w, http.StatusForbidden)
+	if resp["error"] == nil || !strings.Contains(resp["error"].(string), "disabled") {
+		t.Errorf("disabled suggestion error = %v, want message mentioning disabled", resp["error"])
+	}
 }
 
 func TestItemsCRUDOnOwnList(t *testing.T) {

@@ -43,6 +43,15 @@ html.kb {
 :root[data-theme="light"] {
   --oo: 0.6;
 }
+/* High-contrast (accessibility): keep text legible at any system font scale / zoom. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+:root[data-hc] {
+  --muted: var(--ink) !important;
+  --link: var(--ink) !important;
+}
 
 /* --- seasons (event theming) --- */
 /* Christmas overrides a full palette and is defined AFTER the style blocks below

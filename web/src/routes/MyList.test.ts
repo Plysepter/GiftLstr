@@ -208,7 +208,29 @@ describe("MyList first-run birthday prompt", () => {
 
     expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
       method: "PATCH",
-      body: { birthday: "05-15" },
+      body: { birthday: "05-15", holidayReset: "" },
+    });
+  });
+
+  it("saves the chosen reset holiday along with the birthday", async () => {
+    mocks.userStore.set({ ...ME, isNew: true, birthday: "" });
+    mocks.api.mockImplementation(() => Promise.resolve(response([item({ title: "Mug" })])));
+    const { container } = render(MyList);
+    await flush();
+
+    const dlg = birthDialog(container);
+    const month = within(dlg).getByLabelText("Birth month") as HTMLSelectElement;
+    const day = within(dlg).getByLabelText("Birth day") as HTMLSelectElement;
+    fireEvent.change(month, { target: { value: "05" } });
+    fireEvent.change(day, { target: { value: "15" } });
+    const holiday = within(dlg).getByLabelText("Additional reset holiday") as HTMLSelectElement;
+    fireEvent.change(holiday, { target: { value: "mothers" } });
+    fireEvent.submit(dlg.querySelector("form") as HTMLFormElement);
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
+      method: "PATCH",
+      body: { birthday: "05-15", holidayReset: "mothers" },
     });
   });
 });

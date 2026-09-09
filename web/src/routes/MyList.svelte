@@ -50,8 +50,15 @@
 	let birthModalEl: HTMLDialogElement | undefined = $state();
 	let birthMonth = $state('');
 	let birthDay = $state('');
+	let birthHoliday = $state('');
 	let birthSaving = $state(false);
 	let showBirthModal = $derived($user?.isNew === true);
+
+	const birthHolidayOptions = [
+		{ v: '', l: 'None — just birthday & Christmas' },
+		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
+		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
+	];
 
 	const bdayMonths = [
 		{ v: '', l: 'Month' },
@@ -73,8 +80,8 @@
 		try {
 			if (birthMonth && birthDay) {
 				const b = `${birthMonth}-${birthDay.padStart(2, '0')}`;
-				await api('/api/profile', { method: 'PATCH', body: { birthday: b } });
-				user.update((u) => (u ? { ...u, birthday: b, isNew: false } : u));
+				await api('/api/profile', { method: 'PATCH', body: { birthday: b, holidayReset: birthHoliday } });
+				user.update((u) => (u ? { ...u, birthday: b, holidayReset: birthHoliday, isNew: false } : u));
 			} else {
 				user.update((u) => (u ? { ...u, isNew: false } : u));
 			}
@@ -227,7 +234,7 @@
 		error = '';
 		try {
 			await api(`/api/my/private-items/${item.id}/share`, { method: 'PUT' });
-			privateItems = privateItems.filter((i) => i.id !== item.id);
+			await load();
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
 		}
@@ -701,6 +708,10 @@
 						{#each bdayDays as d}<option value={d}>{d}</option>{/each}
 					</select>
 				</div>
+				<label class="birth-holiday" for="birthHolidaySelect">Also archive around</label>
+				<select class="birth-select" id="birthHolidaySelect" bind:value={birthHoliday} aria-label="Additional reset holiday">
+					{#each birthHolidayOptions as o}<option value={o.v}>{o.l}</option>{/each}
+				</select>
 				<div class="dlg-menu">
 					<button class="secondary" type="button" onclick={() => (showBirthModal = false)}>Skip</button>
 					<button type="submit" disabled={birthSaving}>Save</button>
@@ -809,5 +820,6 @@
 	dialog.birth-dlg[open] .dlg-card { animation: dlg-in 300ms cubic-bezier(.2,.9,.3,1.2); }
 	dialog.birth-dlg::backdrop { background: rgba(4,6,12,.5); backdrop-filter: blur(6px); }
 	.bday-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem; }
+	.birth-holiday { display: block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin: 1rem 0 0.35rem; }
 	.birth-select { font-size: 1rem; }
 </style>

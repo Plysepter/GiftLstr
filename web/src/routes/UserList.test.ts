@@ -181,6 +181,70 @@ describe("UserList admin reveal-claimers", () => {
   });
 });
 
+describe("UserList suggestion composer", () => {
+  function submitSuggestion(container: HTMLElement, title: string): void {
+    const name = screen.getByLabelText("Suggest gift idea");
+    fireEvent.input(name, { target: { value: title } });
+    (name as HTMLElement).focus?.();
+    const form = container.querySelector("form.composer") as HTMLFormElement;
+    fireEvent.submit(form);
+  }
+
+  it("shows a suggestion composer to a connected non-owner by default", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(response(false)));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+    const name = screen.getByLabelText("Suggest gift idea");
+    expect(name.getAttribute("placeholder")).toMatch(/Suggest an idea for Dave/);
+    expect(container.querySelector("form.composer")).not.toBeNull();
+  });
+
+  it("POSTs suggestions to the owner's list and reloads", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(path.includes("suggestions") ? {} : response(false)),
+    );
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+    submitSuggestion(container, "A nice coffee");
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/suggestions", {
+      method: "POST",
+      body: { title: "A nice coffee", url: "", notes: "" },
+    });
+  });
+
+  it("hides the composer for the owner's own list", async () => {
+    mocks.api.mockImplementation(() => Promise.resolve(response(false, true)));
+    render(UserList, { userId: "u7" });
+    await flush();
+    expect(screen.queryByLabelText("Suggest gift idea")).toBeNull();
+  });
+
+  it("hides the composer when the owner has disabled suggestions", async () => {
+    mocks.userStore.set({ ...PLEB, allowSuggestions: false });
+    mocks.api.mockImplementation(() => Promise.resolve(response(false)));
+    render(UserList, { userId: "u7" });
+    await flush();
+    expect(screen.queryByLabelText("Suggest gift idea")).toBeNull();
+  });
+
+  it("surfaces an error and keeps the composer when the POST fails", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) => {
+      if (path.includes("suggestions")) return Promise.reject(new Error("list is full"));
+      return Promise.resolve(response(false));
+    });
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+    submitSuggestion(container, "Too late");
+    await flush();
+    expect(screen.getByRole("alert").textContent).toMatch(/list is full/);
+    expect(screen.getByLabelText("Suggest gift idea")).toBeTruthy();
+  });
+});
+
 function within(container: HTMLElement, text: string): HTMLElement | null {
   const all = container.querySelectorAll("*");
   for (const el of all) {

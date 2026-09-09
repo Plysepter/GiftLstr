@@ -112,6 +112,52 @@ func TestLastResetOccurrence(t *testing.T) {
 	}
 }
 
+func TestNthSundayOf(t *testing.T) {
+	tests := []struct {
+		year  int
+		month time.Month
+		nth   int
+		want  string
+	}{
+		{2026, time.May, 1, "2026-05-03"}, // 2026-05-01 is a Friday
+		{2026, time.May, 2, "2026-05-10"}, // Mother's Day 2026
+		{2027, time.May, 2, "2027-05-09"}, // Mother's Day 2027
+		{2025, time.May, 2, "2025-05-11"}, // Mother's Day 2025
+		{2026, time.June, 3, "2026-06-21"}, // Father's Day 2026
+		{2025, time.June, 3, "2025-06-15"}, // Father's Day 2025
+	}
+	for _, tc := range tests {
+		got := nthSundayOf(tc.year, tc.month, tc.nth)
+		if got.Format("2006-01-02") != tc.want {
+			t.Errorf("nthSundayOf(%d, %s, %d) = %s, want %s", tc.year, tc.month, tc.nth, got.Format("2006-01-02"), tc.want)
+		}
+	}
+}
+
+func TestHolidayOccurrence(t *testing.T) {
+	tests := []struct {
+		kind string
+		now  string
+		want string
+	}{
+		{resetMothers, "2026-05-15", "2026-05-10"},
+		{resetMothers, "2026-05-10", "2026-05-10"}, // today counts as the current occurrence
+		{resetMothers, "2026-04-15", "2025-05-11"}, // not yet passed this year -> last year's date
+		{resetFathers, "2026-06-21", "2026-06-21"},
+		{resetFathers, "2026-06-20", "2025-06-15"},
+	}
+	for _, tc := range tests {
+		now, _ := time.Parse("2006-01-02", tc.now)
+		got, ok := holidayOccurrence(tc.kind, now)
+		if !ok || got.Format("2006-01-02") != tc.want {
+			t.Errorf("holidayOccurrence(%q at %s) = %s (%v), want %s", tc.kind, tc.now, got.Format("2006-01-02"), ok, tc.want)
+		}
+	}
+	if _, ok := holidayOccurrence("solstice", time.Date(2026, time.May, 15, 12, 0, 0, 0, time.UTC)); ok {
+		t.Error("unknown holiday should report ok=false")
+	}
+}
+
 func TestArchiveUserListArchivesAndCarriesOver(t *testing.T) {
 	u := seedUser(t, "c_arch_u", "arch_user", false)
 	u.Birthday = "07-01"
@@ -239,6 +285,61 @@ func TestValidMMDD(t *testing.T) {
 			t.Errorf("%q should be invalid", s)
 		}
 	}
+}
+
+// TestArchiveUserListHoliday pins the Mother's Day reset: with the active list
+// created after the previous Christmas cutoff, the holiday reset fires once its
+// 8-day cutoff passes (label "Mother's Day 2026") but not while this year's
+// occurrence is still upcoming.
+func TestArchiveUserListHoliday(t *testing.T) {
+	t.Run("archives after the holiday cutoff passes", func(t *testing.T) {
+		u := seedUser(t, "c_arch_hol", "arch_hol_user", false)
+		u.Birthday = ""
+		u.HolidayReset = resetMothers
+		db.Exec(`UPDATE users SET birthday = '', holiday_reset = 'mothers' WHERE id = ?`, u.ID)
+
+		listID := activeList(t, u.ID)
+		// Backdated after the Christmas cutoff (2026-01-02) but well before
+		// Mother's Day (2026-05-10) so only the holiday reset can fire.
+		db.Exec(`UPDATE lists SET created_at = '2026-01-20 00:00:00' WHERE id = ?`, listID)
+
+		now := time.Date(2026, time.May, 20, 12, 0, 0, 0, time.UTC) // > 8 days after May 10
+		if err := archiveUserList(u, now); err != nil {
+			t.Fatalf("archiveUserList: %v", err)
+		}
+		var label string
+		if err := db.QueryRow(`SELECT label FROM lists WHERE id = ?`, listID).Scan(&label); err != nil {
+			t.Fatal(err)
+		}
+		if label != "Mother's Day 2026" {
+			t.Errorf("label = %q, want Mother's Day 2026", label)
+		}
+		current, _ := activeListID(u.ID)
+		if current == listID {
+			t.Error("list should have been archived by the Mother's Day reset")
+		}
+	})
+
+	t.Run("skips while the holiday is still upcoming", func(t *testing.T) {
+		u := seedUser(t, "c_arch_hol2", "arch_hol2_user", false)
+		u.Birthday = ""
+		u.HolidayReset = resetMothers
+		db.Exec(`UPDATE users SET birthday = '', holiday_reset = 'mothers' WHERE id = ?`, u.ID)
+
+		listID := activeList(t, u.ID)
+		db.Exec(`UPDATE lists SET created_at = '2026-01-20 00:00:00' WHERE id = ?`, listID)
+
+		// Two weeks before Mother's Day 2026: last year's occurrence already
+		// predates the list, so nothing fires.
+		now := time.Date(2026, time.April, 25, 12, 0, 0, 0, time.UTC)
+		if err := archiveUserList(u, now); err != nil {
+			t.Fatalf("archiveUserList: %v", err)
+		}
+		current, _ := activeListID(u.ID)
+		if current != listID {
+			t.Error("list should not be archived before the holiday occurs this year")
+		}
+	})
 }
 
 func TestArchiveUserListWithNoBirthday(t *testing.T) {

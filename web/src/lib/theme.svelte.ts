@@ -32,9 +32,12 @@ const KEY = "theme";
 /** The user's persisted preference; 'system' follows prefers-color-scheme. */
 export const theme = $state<{ choice: ThemeChoice }>({ choice: loadChoice() });
 
-export const prefs = $state<{ style: ThemeStyle; events: boolean; useOwnerTheme: boolean }>(
-  loadPrefs(),
-);
+export const prefs = $state<{
+  style: ThemeStyle;
+  events: boolean;
+  useOwnerTheme: boolean;
+  contrast: boolean;
+}>(loadPrefs());
 
 /**
  * Active style override set while viewing another user's list that opts into
@@ -74,10 +77,11 @@ export function setSeasonOverride(v: Season | "auto"): void {
   } catch {
     // Non-fatal
   }
-  computeSeason(lastBirthdayMMDD);
+  computeSeason(lastBirthdayMMDD, lastHolidayReset);
 }
 
 let lastBirthdayMMDD = "01-01";
+let lastHolidayReset = "";
 
 function loadChoice(): ThemeChoice {
   try {
@@ -89,18 +93,25 @@ function loadChoice(): ThemeChoice {
   return "system";
 }
 
-function loadPrefs(): { style: ThemeStyle; events: boolean; useOwnerTheme: boolean } {
+function loadPrefs(): {
+  style: ThemeStyle;
+  events: boolean;
+  useOwnerTheme: boolean;
+  contrast: boolean;
+} {
   try {
     let style = localStorage.getItem("theme-style");
     const events = localStorage.getItem("theme-events");
     const useOwnerTheme = localStorage.getItem("theme-useOwner");
+    const contrast = localStorage.getItem("theme-contrast");
     return {
       style: ALL_STYLES.includes(style as ThemeStyle) ? (style as ThemeStyle) : "aurora",
       events: events !== "0",
       useOwnerTheme: useOwnerTheme !== "0",
+      contrast: contrast !== "0",
     };
   } catch {
-    return { style: "aurora", events: true, useOwnerTheme: true };
+    return { style: "aurora", events: true, useOwnerTheme: true, contrast: false };
   }
 }
 
@@ -114,12 +125,15 @@ export function apply(): void {
   const style = ownerStyleOverride.value !== null ? ownerStyleOverride.value : prefs.style;
   document.documentElement.dataset.style = style;
   document.documentElement.dataset.season = season.kind;
+  if (prefs.contrast) document.documentElement.dataset.hc = "on";
+  else delete document.documentElement.dataset.hc;
 }
 
-/** Pure helper: returns the season that would be active for a given birthday. */
+/** Pure helper: returns the season that would be active for a given birthday + optional holiday reset. */
 export function resolveSeason(
   birthdayMMDD: string,
   eventsEnabled: boolean,
+  holidayReset = "",
   today = new Date(),
 ): { kind: Season; days: number; label: string } {
   const next = (month: number, day: number): number => {
@@ -133,6 +147,40 @@ export function resolveSeason(
     Number(birthdayMMDD.split("-")[1]) || 1,
   );
   const xmas = next(12, 25);
+
+  const holidayOpts: Record<string, { month: number; week: number; label: string }> = {
+    mothers: { month: 5, week: 2, label: "Mother's Day" },
+    fathers: { month: 6, week: 3, label: "Father's Day" },
+  };
+  const hOpt = holidayReset ? holidayOpts[holidayReset] : undefined;
+  const hol = hOpt
+    ? (() => {
+        const sunday = (year: number): number => {
+          const first = new Date(year, hOpt.month - 1, 1);
+          const offset = (7 - first.getDay()) % 7;
+          return 1 + offset + (hOpt.week - 1) * 7;
+        };
+        let t = new Date(
+          today.getFullYear(),
+          hOpt.month - 1,
+          sunday(today.getFullYear()),
+          23,
+          59,
+          59,
+        );
+        if (t.getTime() < today.getTime())
+          t = new Date(
+            today.getFullYear() + 1,
+            hOpt.month - 1,
+            sunday(today.getFullYear() + 1),
+            23,
+            59,
+            59,
+          );
+        return Math.round((t.getTime() - today.getTime()) / 864e5);
+      })()
+    : Infinity;
+
   let kind: Season = "none";
   let days = 0;
   let label = "";
@@ -142,14 +190,19 @@ export function resolveSeason(
       days = xmas;
       label = "Christmas";
     } else if (kind === "birthday") {
-      days = bday;
-      label = "birthday";
+      days = Math.min(bday, hol);
+      label = hol < bday ? (hOpt?.label ?? "birthday") : "birthday";
     } else {
       days = 0;
       label = "";
     }
   } else {
-    if (bday <= xmas) {
+    const earliest = Math.min(bday, hol, xmas);
+    if (hol === earliest) {
+      days = hol;
+      label = hOpt?.label ?? "birthday";
+      kind = "birthday";
+    } else if (bday === earliest) {
       days = bday;
       label = "birthday";
       kind = "birthday";
@@ -203,14 +256,26 @@ export function setUseOwnerTheme(v: boolean): void {
   }
 }
 
+export function setContrast(v: boolean): void {
+  prefs.contrast = v;
+  try {
+    localStorage.setItem("theme-contrast", v ? "1" : "0");
+  } catch {
+    // Non-fatal.
+  }
+  apply();
+}
+
 /**
- * Recomputes the active season from the user's birthday (+ fixed Christmas)
- * and the "event theming" preference. Events apply when less than a month away.
- * An admin local override (seasonOverride) forces the palette regardless of date.
+ * Recomputes the active season from the user's birthday (+ optional Mother's/Father's
+ * Day reset) and fixed Christmas, and the "event theming" preference. Events apply when
+ * less than a month away. An admin local override (seasonOverride) forces the palette
+ * regardless of date.
  */
-export function computeSeason(birthdayMMDD: string, today = new Date()): void {
+export function computeSeason(birthdayMMDD: string, holidayReset = "", today = new Date()): void {
   lastBirthdayMMDD = birthdayMMDD;
-  const { kind, days, label } = resolveSeason(birthdayMMDD, prefs.events, today);
+  lastHolidayReset = holidayReset;
+  const { kind, days, label } = resolveSeason(birthdayMMDD, prefs.events, holidayReset, today);
   season.kind = kind;
   season.days = days;
   season.label = label;

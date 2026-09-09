@@ -4,8 +4,17 @@
 	import { confetti } from '../confetti.js';
 	import Icon from '../Icon.svelte';
 
-	let { onadd, isPrivate = false }: { onadd: (item: { title: string; url: string; notes: string }) => Promise<boolean> | boolean | void; isPrivate?: boolean } =
-		$props();
+	let {
+		onadd,
+		isPrivate = false,
+		placeholder,
+		label
+	}: {
+		onadd: (item: { title: string; url: string; notes: string }) => Promise<boolean> | boolean | void;
+		isPrivate?: boolean;
+		placeholder?: string;
+		label?: string;
+	} = $props();
 
 	let title = $state('');
 	let url = $state('');
@@ -123,11 +132,11 @@
 		<div class="namerow">
 			<input
 				class="name"
-				placeholder={isPrivate ? 'Add a private idea…' : 'Gift idea…'}
+				placeholder={placeholder ?? (isPrivate ? 'Add a private idea…' : 'Gift idea…')}
 				bind:value={title}
 				onfocus={() => setExpanded(true)}
 				onpaste={onNamePaste}
-				aria-label={isPrivate ? 'Private gift idea' : 'Gift idea'}
+				aria-label={label ?? (isPrivate ? 'Private gift idea' : 'Gift idea')}
 			/>
 			<button
 				bind:this={addBtnEl}

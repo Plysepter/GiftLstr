@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS users (
 	display_name TEXT NOT NULL,
 	is_admin INTEGER NOT NULL DEFAULT 0,
 	birthday TEXT NOT NULL DEFAULT '',
+	holiday_reset TEXT NOT NULL DEFAULT '',
+	allow_suggestions INTEGER NOT NULL DEFAULT 1,
 	theme_style TEXT NOT NULL DEFAULT 'aurora',
 	share_code TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))

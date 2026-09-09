@@ -20,7 +20,7 @@
 		const u = $user;
 		const r = $route;
 		if (parseRoute(r).name === 'userList') return;
-		computeSeason(u?.birthday ?? '01-01');
+		computeSeason(u?.birthday ?? '01-01', u?.holidayReset ?? '');
 	});
 	// Once on initial load, bring local theme in line with server's persisted choice.
 	$effect.pre(() => {

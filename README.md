@@ -55,7 +55,7 @@ GiftLstr is a wishlist app for people who never know what to ask for (or buy). K
    ```sh
    AUTHENTIK_ISSUER=http://localhost:9000/application/o/giftlstr/
    AUTHENTIK_CLIENT_ID=b8m2c...      # from the OIDC provider
-   ADMIN_USER_IDS=                   # comma-separated Authentik subject UUIDs
+   ADMIN_USER_IDS=                   # comma-separated Authentik sub values (see below)
    ```
 
    The compose file defaults `AUTHENTIK_ISSUER_BACKEND` to Authentik's
@@ -71,9 +71,29 @@ GiftLstr is a wishlist app for people who never know what to ask for (or buy). K
 
    The app is served at http://localhost:8080. Data (the SQLite database) lives in `./data`, which is mounted into the container.
 
-   To find your own Authentik subject: sign in once as a normal user, then open
-   the admin UI at `http://localhost:9000`, copy your user's UUID into
-   `ADMIN_USER_IDS`, and restart.
+   ### Granting admin
+
+   `ADMIN_USER_IDS` is matched against the OIDC `sub` claim — the exact subject
+   value GiftLstr stores for the user. **Authentik hashes the `sub` by default**
+   (its provider "Subject mode" is set to the hashed user ID, a SHA-256 of the
+   user's UUID), so the UUID the admin UI shows is *not* the value to use. To
+   grant admin to an account:
+
+   1. Sign in to the app once as that account (this provisions the user).
+   2. Read the stored subject from the database:
+
+      ```sh
+      sqlite3 ./data/giftlstr.db "SELECT auth_user_id, username FROM users;"
+      ```
+
+      `auth_user_id` *is* the `sub` to put in `ADMIN_USER_IDS`.
+   3. Restart; the user is granted admin on their next request.
+
+   > If the account hasn't signed in yet, you can instead change the OIDC
+   > provider's **Subject mode** to "Based on the User's UUID" so `sub` equals
+   > the admin-UI UUID, and use those UUIDs directly. Only do this **before**
+   > the first login — changing it later changes every `sub`, so all existing
+   > accounts would be treated as new users.
 
 ## Development
 
@@ -114,7 +134,7 @@ pnpm e2e
 | `AUTHENTIK_ISSUER_BACKEND`| URL the server fetches discovery/JWKS/token from; defaults to `AUTHENTIK_ISSUER` (defaults to `http://server:9000/application/o/giftlstr/` under the compose stack) |
 | `AUTHENTIK_CLIENT_ID`     | OIDC client id for the SPA flow (required for sign-in)                   |
 | `AUTHENTIK_BIRTHDAY_CLAIM`| Claim/attribute name carrying the user's MM-DD birthday (default `birthday`) |
-| `ADMIN_USER_IDS`          | Comma-separated Authentik subject IDs granted admin                     |
+| `ADMIN_USER_IDS`          | Comma-separated Authentik `sub` values granted admin (hashed by default — see README) |
 | `AUTH_PROVIDER`           | Backend identity provider name (default `authentik`)                    |
 | `DATA_DIR`                | Directory for the SQLite database (default `/data`)                      |
 | `PORT`                    | HTTP listen port (default `8080`)                                        |

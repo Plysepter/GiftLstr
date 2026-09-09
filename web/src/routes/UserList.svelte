@@ -16,6 +16,7 @@
 	import type { ThemeStyle } from '../lib/theme.svelte.js';
 	import { untrack } from 'svelte';
 	import { buildListText, copyToClipboard } from '../lib/listText.js';
+	import Composer from '../lib/design/Composer.svelte';
 
 	let { userId }: { userId: string } = $props();
 
@@ -25,11 +26,14 @@
 	let openId = $state<string | null>(null);
 	let revealClaimers = $state(false);
 	let copied = $state(false);
+	let suggestError = $state('');
 
 	const canHover = matchMedia('(hover: hover) and (pointer: fine)').matches;
 
+	const canSuggest = $derived(data !== null && !data.isOwner && $user?.allowSuggestions !== false);
+
 	let ownerSeason = $derived(
-		data?.user.birthday ? resolveSeason(data.user.birthday, prefs.events) : null
+		data?.user.birthday ? resolveSeason(data.user.birthday, prefs.events, data.user.holidayReset ?? '') : null
 	);
 
 	let prevSeason: { kind: typeof season.kind; days: number; label: string; dataset: string } | null = null;
@@ -58,7 +62,7 @@
 				untrack(() => {
 					ownerStyleOverride.value = null;
 				});
-				apply();
+				untrack(() => apply());
 			}
 			return;
 		}
@@ -67,7 +71,7 @@
 		const birthday = untrack(() => owner.birthday);
 		const eventsEnabled = untrack(() => prefs.events);
 		if (birthday) {
-			const os = untrack(() => resolveSeason(birthday, eventsEnabled));
+			const os = untrack(() => resolveSeason(birthday, eventsEnabled, owner.holidayReset ?? ''));
 			if (prevSeason === null) {
 				prevSeason = untrack(() => ({
 					kind: season.kind,
@@ -97,12 +101,12 @@
 			untrack(() => {
 				ownerStyleOverride.value = ownerStyle as ThemeStyle;
 			});
-			apply();
+			untrack(() => apply());
 		} else if (!wantsOwnerStyle && activeOverride !== null) {
 			untrack(() => {
 				ownerStyleOverride.value = null;
 			});
-			apply();
+			untrack(() => apply());
 		}
 
 		return () => {
@@ -120,7 +124,7 @@
 				untrack(() => {
 					ownerStyleOverride.value = null;
 				});
-				apply();
+				untrack(() => apply());
 			}
 		};
 	});
@@ -165,6 +169,18 @@
 			await load();
 		} catch (err) {
 			error = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	async function suggestItem(item: { title: string; url: string; notes: string }): Promise<boolean> {
+		suggestError = '';
+		try {
+			await api(`/api/users/${userId}/suggestions`, { method: 'POST', body: item });
+			await load();
+			return true;
+		} catch (err) {
+			suggestError = err instanceof Error ? err.message : String(err);
+			return false;
 		}
 	}
 
@@ -283,6 +299,20 @@
 		hint="Check back later — maybe they are still thinking."
 		ready={!loading && !error && !network.offline && data !== null && visible.length === 0}
 	/>
+
+	{#if canSuggest}
+		<div class="suggest-wrap">
+			{#if suggestError}
+				<p class="error" role="alert">{suggestError}</p>
+			{/if}
+			<Composer
+				onadd={suggestItem}
+				isPrivate
+				label="Suggest gift idea"
+				placeholder={'Suggest an idea for ' + (data?.user.displayName.split(/\s+/)[0] ?? 'them') + '…'}
+			/>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -376,4 +406,7 @@
 	.copy-btn:active {
 		transform: scale(0.97);
 	}
+
+	.suggest-wrap { margin-top: 1.3rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
+	.suggest-wrap .error { margin: 0 0 0.5rem; }
 </style>

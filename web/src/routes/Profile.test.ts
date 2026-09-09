@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => {
     setStyle: vi.fn(),
     setEvents: vi.fn(),
     setUseOwnerTheme: vi.fn(),
+    setContrast: vi.fn(),
     signOut: vi.fn(),
     copyToClipboard: vi.fn(),
   };
@@ -49,13 +50,14 @@ vi.mock("../lib/auth.js", () => ({
 }));
 vi.mock("../lib/theme.svelte.js", () => ({
   theme: { choice: "system" },
-  prefs: { style: "kinetic", events: true, useOwnerTheme: false },
+  prefs: { style: "kinetic", events: true, useOwnerTheme: false, contrast: false },
   season: { kind: "none", days: 0, label: "" },
   seasonOverride: { value: "auto" },
   setTheme: mocks.setTheme,
   setStyle: mocks.setStyle,
   setEvents: mocks.setEvents,
   setUseOwnerTheme: mocks.setUseOwnerTheme,
+  setContrast: mocks.setContrast,
 }));
 vi.mock("../lib/listText.js", () => ({ copyToClipboard: mocks.copyToClipboard }));
 
@@ -187,5 +189,86 @@ describe("Appearance", () => {
     const labels = styles.map((b) => b.textContent ?? "");
     expect(labels[0]).toMatch(/Aurora/);
     expect(labels.join(" ")).toMatch(/Aurora.*Kinetic/);
+  });
+
+  it("toggles high contrast through setContrast", async () => {
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#contrastToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    await flush();
+    expect(mocks.setContrast).toHaveBeenCalledWith(true);
+  });
+});
+
+describe("Reset holiday", () => {
+  it("defaults to no holiday and saves Mother's Day", async () => {
+    mocks.api.mockResolvedValue({});
+    const { container } = render(Profile);
+    await flush();
+    const select = container.querySelector("#holidaySelect") as HTMLSelectElement;
+    expect(select.value).toBe("");
+    fireEvent.change(select, { target: { value: "mothers" } });
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
+      method: "PATCH",
+      body: { holidayReset: "mothers" },
+    });
+    expect(((mocks.userStore as { value: unknown }).value as User | null)?.holidayReset).toBe(
+      "mothers",
+    );
+  });
+
+  it("pre-fills the profile's saved holiday", async () => {
+    mocks.userStore.set({ ...ALICE, holidayReset: "fathers" });
+    const { container } = render(Profile);
+    await flush();
+    const select = container.querySelector("#holidaySelect") as HTMLSelectElement;
+    expect(select.value).toBe("fathers");
+  });
+
+  it("shows an error state when the PATCH fails and reverts the selection", async () => {
+    mocks.api.mockRejectedValue(new Error("boom"));
+    const { container } = render(Profile);
+    await flush();
+    const select = container.querySelector("#holidaySelect") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "fathers" } });
+    await flush();
+    expect(select.value).toBe("");
+  });
+});
+
+describe("Suggestions", () => {
+  it("allows suggestions by default and disables them via PATCH", async () => {
+    mocks.api.mockResolvedValue({});
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#suggestionsToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
+      method: "PATCH",
+      body: { allowSuggestions: false },
+    });
+  });
+
+  it("reflects a disabled allowSuggestions setting", async () => {
+    mocks.userStore.set({ ...ALICE, allowSuggestions: false });
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#suggestionsToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+  });
+
+  it("reverts the checkbox when the PATCH fails", async () => {
+    mocks.api.mockRejectedValue(new Error("boom"));
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#suggestionsToggle") as HTMLInputElement;
+    fireEvent.click(toggle);
+    await flush();
+    expect(toggle.checked).toBe(true);
   });
 });

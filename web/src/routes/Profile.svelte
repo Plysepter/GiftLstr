@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { user, loaded, signOut } from '../lib/auth.js';
 	import { api } from '../lib/api.js';
-	import { theme, prefs, setTheme, setStyle, setEvents, setUseOwnerTheme } from '../lib/theme.svelte.js';
+	import { theme, prefs, setTheme, setStyle, setEvents, setUseOwnerTheme, setContrast } from '../lib/theme.svelte.js';
 	import type { ThemeChoice, ThemeStyle } from '../lib/theme.svelte.js';
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
@@ -42,6 +42,39 @@
 	let birthMonth = $state('');
 	let birthDay = $state('');
 	let birthState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
+
+	let holiday = $state('');
+	let holidayState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
+
+	const holidayOptions = [
+		{ v: '', l: 'None — just birthday & Christmas' },
+		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
+		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
+	];
+
+	$effect(() => {
+		const u = $user;
+		if (u) {
+			holiday = u.holidayReset ?? '';
+		}
+	});
+
+	async function saveHoliday(e: Event): Promise<void> {
+		const v = (e.currentTarget as HTMLSelectElement).value;
+		holiday = v;
+		if (v === ($user?.holidayReset ?? '')) return;
+		holidayState = 'saving';
+		try {
+			await api('/api/profile', { method: 'PATCH', body: { holidayReset: v } });
+			user.update((u) => (u ? { ...u, holidayReset: v } : u));
+			holidayState = 'done';
+			setTimeout(() => (holidayState = 'idle'), 1500);
+		} catch {
+			holiday = $user?.holidayReset ?? '';
+			holidayState = 'error';
+			setTimeout(() => (holidayState = 'idle'), 2000);
+		}
+	}
 
 	const bdayMonths = [
 		{ v: '', l: 'Month' },
@@ -116,7 +149,8 @@
 	});
 
 	async function toggleShare(e: Event): Promise<void> {
-		const enabled = (e.currentTarget as HTMLInputElement).checked;
+		const el = e.currentTarget as HTMLInputElement;
+		const enabled = el.checked;
 		shareBusy = true;
 		try {
 			const res = await api<{ shareCode: string }>('/api/connect/share', {
@@ -128,9 +162,33 @@
 			user.update((u) => (u ? { ...u, shareCode: res.shareCode } : u));
 		} catch {
 			shareEnabled = !enabled;
-			(e.currentTarget as HTMLInputElement).checked = shareEnabled;
+			el.checked = shareEnabled;
 		} finally {
 			shareBusy = false;
+		}
+	}
+
+	let sugEnabled = $state(true);
+	let sugBusy = $state(false);
+
+	$effect(() => {
+		const u = $user;
+		if (u) sugEnabled = u.allowSuggestions !== false;
+	});
+
+	async function toggleSuggestions(e: Event): Promise<void> {
+		const el = e.currentTarget as HTMLInputElement;
+		const enabled = el.checked;
+		sugBusy = true;
+		sugEnabled = enabled;
+		try {
+			await api('/api/profile', { method: 'PATCH', body: { allowSuggestions: enabled } });
+			user.update((u) => (u ? { ...u, allowSuggestions: enabled } : u));
+		} catch {
+			sugEnabled = !enabled;
+			el.checked = sugEnabled;
+		} finally {
+			sugBusy = false;
 		}
 	}
 
@@ -195,6 +253,14 @@
 				<span class="hint">When viewing someone else’s list, use their selected theme (your light/dark choice is kept)</span>
 			</span>
 		</label>
+
+		<label class="event-row" for="contrastToggle">
+			<input id="contrastToggle" type="checkbox" checked={prefs.contrast} onchange={(e) => setContrast(e.currentTarget.checked)} />
+			<span>
+				<b>High contrast</b>
+				<span class="hint">Keeps text fully legible at larger system font scales and zoom levels</span>
+			</span>
+		</label>
 	</div>
 
 	<div class="card">
@@ -221,6 +287,20 @@
 				</button>
 			</div>
 		{/if}
+
+		<label class="event-row" for="suggestionsToggle">
+			<input
+				id="suggestionsToggle"
+				type="checkbox"
+				checked={sugEnabled}
+				disabled={sugBusy}
+				onchange={(e) => void toggleSuggestions(e)}
+			/>
+			<span>
+				<b>Suggest ideas on friends’ lists</b>
+				<span class="hint">Shows a “suggest an idea” composer when you’re viewing someone else’s list. Turn off to keep their lists claim-only.</span>
+			</span>
+		</label>
 	</div>
 
 	<form onsubmit={saveBirthday} class="card">
@@ -257,6 +337,25 @@
 					<button class="secondary bday-btn" type="button" onclick={() => void clearBirthday()}>Clear</button>
 				{/if}
 			</div>
+		</div>
+		<div class="holiday-row">
+			<label for="holidaySelect">Also archive around</label>
+			<select
+				class="bday-select"
+				id="holidaySelect"
+				value={holiday}
+				disabled={holidayState === 'saving'}
+				onchange={(e) => void saveHoliday(e)}
+				aria-label="Additional reset holiday"
+			>
+				{#each holidayOptions as o}<option value={o.v}>{o.l}</option>{/each}
+			</select>
+			<span class="holiday-status" class:done={holidayState === 'done'} class:err={holidayState === 'error'}>
+				{#if holidayState === 'done'}Saved
+				{:else if holidayState === 'error'}Couldn’t save
+				{:else}Choose if you’d rather reset around Mother’s or Father’s Day instead of your birthday.
+				{/if}
+			</span>
 		</div>
 	</form>
 
@@ -325,6 +424,11 @@ min-width: 74px; height: 46px; padding: 0 1.1rem;
 		box-shadow: 0 6px 24px -6px rgba(248, 113, 113, 0.5);
 		animation: shake-x 380ms cubic-bezier(.36,.07,.19,.97) 3;
 	}
+	.holiday-row { display: grid; gap: 0.45rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+	.holiday-row label { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); }
+	.holiday-status { font-size: 0.78rem; color: var(--muted); min-height: 1.1em; }
+	.holiday-status.done { color: var(--c-claim); }
+	.holiday-status.err { color: #ef4444; }
 	@keyframes shake-x {
 		0%, 100% { transform: translateX(0); }
 		25% { transform: translateX(3px); }

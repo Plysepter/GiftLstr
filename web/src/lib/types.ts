@@ -9,6 +9,10 @@ export interface User {
   shareCode?: string;
   /** True when the account was just created (drives the first-run birthday prompt). */
   isNew?: boolean;
+  /** 'mothers' | 'fathers' — extra reset holiday besides birthday & Christmas. */
+  holidayReset?: string;
+  /** Whether connected users can add suggested items to your list. Default true. */
+  allowSuggestions?: boolean;
 }
 
 export interface Item {
@@ -26,7 +30,7 @@ export interface Item {
 }
 
 export interface UserListResponse {
-  user: Pick<User, "id" | "username" | "displayName" | "birthday" | "themeStyle">;
+  user: Pick<User, "id" | "username" | "displayName" | "birthday" | "themeStyle" | "holidayReset">;
   items: Item[];
   /** Owner-only private ideas (only returned when viewing your own list). */
   privateItems?: Item[];

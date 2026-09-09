@@ -88,6 +88,8 @@ func main() {
 		`ALTER TABLE items ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`,
 		`ALTER TABLE items ADD COLUMN suggested_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE items ADD COLUMN suggested_by_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN holiday_reset TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
 	} {
 		db.Exec(m) // ignore "duplicate column" errors
 	}
@@ -282,21 +284,23 @@ func logMiddleware(next http.Handler) http.Handler {
 // ---------- auth ----------
 
 type user struct {
-	ID          string `json:"id"`
-	AuthUserID  string `json:"-"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName"`
-	IsAdmin     bool   `json:"isAdmin"`
-	Birthday    string `json:"birthday"`
-	ThemeStyle  string `json:"themeStyle"`
-	ShareCode   string `json:"shareCode"`
-	IsNew       bool   `json:"isNew,omitempty"`
+	ID               string `json:"id"`
+	AuthUserID       string `json:"-"`
+	Username         string `json:"username"`
+	DisplayName      string `json:"displayName"`
+	IsAdmin          bool   `json:"isAdmin"`
+	Birthday         string `json:"birthday"`
+	HolidayReset     string `json:"holidayReset"`
+	AllowSuggestions bool   `json:"allowSuggestions"`
+	ThemeStyle       string `json:"themeStyle"`
+	ShareCode        string `json:"shareCode"`
+	IsNew            bool   `json:"isNew,omitempty"`
 }
 
 func scanUser(row *sql.Row) (*user, error) {
 	var u user
 	var theme sql.NullString
-	err := row.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode)
+	err := row.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &u.HolidayReset, &u.AllowSuggestions, &theme, &u.ShareCode)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +312,7 @@ func scanUser(row *sql.Row) (*user, error) {
 	return &u, nil
 }
 
-const userCols = `id, auth_user_id, username, display_name, is_admin, birthday, theme_style, share_code`
+const userCols = `id, auth_user_id, username, display_name, is_admin, birthday, holiday_reset, allow_suggestions, theme_style, share_code`
 
 func getSessionToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -362,7 +366,7 @@ func insertUserAndList(authID, username, displayName string, isAdmin bool, birth
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, ThemeStyle: "aurora", ShareCode: "", IsNew: true}, nil
+	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, HolidayReset: "", AllowSuggestions: true, ThemeStyle: "aurora", ShareCode: "", IsNew: true}, nil
 }
 
 // provisionUser creates the local user row and active list on first login.
@@ -460,6 +464,21 @@ func activeListID(userID string) (string, error) {
 
 // ---------- reset dates / archiving ----------
 
+// Reset kinds a user may be configured with. "mothers" (Mother's Day, the
+// second Sunday of May) and "fathers" (Father's Day, the third Sunday of
+// June) are optional holiday resets whose calendar date varies by year.
+const (
+	resetChristmas = "christmas"
+	resetBirthday  = "birthday"
+	resetMothers   = "mothers"
+	resetFathers   = "fathers"
+)
+
+// validHolidayReset reports whether s is a supported holiday reset identifier.
+func validHolidayReset(s string) bool {
+	return s == "" || s == resetMothers || s == resetFathers
+}
+
 // lastResetOccurrence returns the most recent occurrence of a yearly MM-DD
 // date relative to now.
 func lastResetOccurrence(mmdd string, now time.Time) time.Time {
@@ -478,12 +497,83 @@ func parseMMDD(mmdd string, year int) time.Time {
 	return time.Date(year, time.Month(m), d, 0, 0, 0, 0, time.UTC)
 }
 
-// resetLabel returns the human-readable archive label for a reset occurrence.
-func resetLabel(reset time.Time, mmdd string) string {
-	if mmdd == "12-25" {
-		return fmt.Sprintf("Christmas %d", reset.Year())
+// nthSundayOf returns the nth Sunday of the given month (1 = first Sunday).
+func nthSundayOf(year int, month time.Month, nth int) time.Time {
+	first := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
+	offset := (7 - int(first.Weekday())) % 7 // days from the 1st to its first Sunday
+	return time.Date(year, month, 1+offset+(nth-1)*7, 0, 0, 0, 0, time.UTC)
+}
+
+// holidayDate returns the calendar date of the named holiday for the given
+// year, or ok=false for an unknown holiday.
+func holidayDate(kind string, year int) (time.Time, bool) {
+	switch kind {
+	case resetMothers:
+		return nthSundayOf(year, time.May, 2), true
+	case resetFathers:
+		return nthSundayOf(year, time.June, 3), true
 	}
-	return fmt.Sprintf("Birthday %d", reset.Year())
+	return time.Time{}, false
+}
+
+// holidayOccurrence returns the most recent occurrence of the named holiday
+// relative to now (this year if it has passed, otherwise last year).
+func holidayOccurrence(kind string, now time.Time) (time.Time, bool) {
+	var best time.Time
+	found := false
+	// The holiday date varies by year, so evaluate both candidate years and
+	// keep the latest one that is not in the future.
+	for _, year := range []int{now.Year(), now.Year() - 1} {
+		if d, ok := holidayDate(kind, year); ok && !d.After(now) && (!found || d.After(best)) {
+			best = d
+			found = true
+		}
+	}
+	return best, found
+}
+
+// userResetDates returns the user's configured yearly reset kinds in a stable
+// discovery order: Christmas, then birthday, then the optional holiday reset.
+func userResetDates(u *user) []string {
+	kinds := []string{resetChristmas}
+	if validMMDD(u.Birthday) {
+		kinds = append(kinds, resetBirthday)
+	}
+	if validHolidayReset(u.HolidayReset) && u.HolidayReset != "" {
+		kinds = append(kinds, u.HolidayReset)
+	}
+	return kinds
+}
+
+// lastResetDate returns the most recent occurrence of the given reset kind
+// relative to now, or ok=false when the user has no such reset configured.
+func lastResetDate(u *user, kind string, now time.Time) (time.Time, bool) {
+	switch kind {
+	case resetChristmas:
+		return lastResetOccurrence("12-25", now), true
+	case resetBirthday:
+		if !validMMDD(u.Birthday) {
+			return time.Time{}, false
+		}
+		return lastResetOccurrence(u.Birthday, now), true
+	case resetMothers, resetFathers:
+		return holidayOccurrence(kind, now)
+	}
+	return time.Time{}, false
+}
+
+// resetLabel returns the human-readable archive label for a reset occurrence.
+func resetLabel(kind string, reset time.Time) string {
+	switch kind {
+	case resetChristmas:
+		return fmt.Sprintf("Christmas %d", reset.Year())
+	case resetMothers:
+		return fmt.Sprintf("Mother's Day %d", reset.Year())
+	case resetFathers:
+		return fmt.Sprintf("Father's Day %d", reset.Year())
+	default:
+		return fmt.Sprintf("Birthday %d", reset.Year())
+	}
 }
 
 // archiveUserList archives the active list if a reset date passed more than a
@@ -499,11 +589,11 @@ func archiveUserList(u *user, now time.Time) error {
 	if err := db.QueryRow(`SELECT created_at, label FROM lists WHERE id = ?`, listID).Scan(&createdStr, &label); err != nil {
 		return err
 	}
-	for _, mmdd := range []string{"12-25", u.Birthday} {
-		if !validMMDD(mmdd) {
+	for _, kind := range userResetDates(u) {
+		reset, ok := lastResetDate(u, kind, now)
+		if !ok {
 			continue
 		}
-		reset := lastResetOccurrence(mmdd, now)
 		// Cutoff is 8 days (not 7) after the reset date so the archive never
 		// happens a day early for users ahead of UTC: a birthday on 07-01 local
 		// time can be 06-30 UTC for users far ahead, and the extra day gives
@@ -516,7 +606,7 @@ func archiveUserList(u *user, now time.Time) error {
 		if err != nil || !created.Before(cutoff) {
 			continue // already handled by an earlier archive
 		}
-		lbl := resetLabel(reset, mmdd)
+		lbl := resetLabel(kind, reset)
 		tx, err := db.Begin()
 		if err != nil {
 			return err
@@ -596,7 +686,7 @@ func archiveLoop() {
 		for rows.Next() {
 			var u user
 			var theme sql.NullString
-			if rows.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &theme, &u.ShareCode) == nil {
+			if rows.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &u.HolidayReset, &u.AllowSuggestions, &theme, &u.ShareCode) == nil {
 				if theme.Valid {
 					u.ThemeStyle = theme.String
 				} else {

@@ -51,6 +51,7 @@ func registerAPI(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/lists", rl.rateLimit(auth(handleLists)))
 	mux.HandleFunc("GET /api/users/{id}/list", rl.rateLimit(auth(handleUserList)))
+	mux.HandleFunc("POST /api/users/{id}/suggestions", rl.rateLimit(auth(handleAddSuggestion)))
 	mux.HandleFunc("GET /api/metadata", rl.rateLimitStrict(auth(handleMetadata)))
 
 	// OIDC proxy: lets the SPA reach Authentik's discovery + token endpoints
@@ -208,15 +209,17 @@ var validThemeStyles = map[string]bool{
 func handleProfile(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	var req struct {
-		Birthday   *string `json:"birthday"` // MM-DD
-		ThemeStyle *string `json:"themeStyle"`
+		Birthday         *string `json:"birthday"` // MM-DD
+		ThemeStyle       *string `json:"themeStyle"`
+		HolidayReset     *string `json:"holidayReset"`
+		AllowSuggestions *bool   `json:"allowSuggestions"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, "bad request")
 		return
 	}
-	if req.Birthday == nil && req.ThemeStyle == nil {
-		fail(w, 400, "birthday or themeStyle required")
+	if req.Birthday == nil && req.ThemeStyle == nil && req.HolidayReset == nil && req.AllowSuggestions == nil {
+		fail(w, 400, "birthday, themeStyle, holidayReset or allowSuggestions required")
 		return
 	}
 	if req.Birthday != nil {
@@ -239,6 +242,29 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 		}
 		if _, err := db.Exec(`UPDATE users SET theme_style = ? WHERE id = ?`, ts, u.ID); err != nil {
 			log.Printf("update theme_style: %v", err)
+			fail(w, 500, "update failed")
+			return
+		}
+	}
+	if req.HolidayReset != nil {
+		hr := strings.TrimSpace(*req.HolidayReset)
+		if !validHolidayReset(hr) {
+			fail(w, 400, "invalid holidayReset")
+			return
+		}
+		if _, err := db.Exec(`UPDATE users SET holiday_reset = ? WHERE id = ?`, hr, u.ID); err != nil {
+			log.Printf("update holiday_reset: %v", err)
+			fail(w, 500, "update failed")
+			return
+		}
+	}
+	if req.AllowSuggestions != nil {
+		enabled := 0
+		if *req.AllowSuggestions {
+			enabled = 1
+		}
+		if _, err := db.Exec(`UPDATE users SET allow_suggestions = ? WHERE id = ?`, enabled, u.ID); err != nil {
+			log.Printf("update allow_suggestions: %v", err)
 			fail(w, 500, "update failed")
 			return
 		}
@@ -297,11 +323,12 @@ func itemRows(where string, args ...any) ([]listItem, error) {
 }
 
 type listOwner struct {
-	ID          string `json:"id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"displayName"`
-	Birthday    string `json:"birthday"`
-	ThemeStyle  string `json:"themeStyle"`
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"displayName"`
+	Birthday     string `json:"birthday"`
+	HolidayReset string `json:"holidayReset"`
+	ThemeStyle   string `json:"themeStyle"`
 }
 
 type userListResponse struct {
@@ -323,8 +350,8 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var owner listOwner
-	if err := db.QueryRow(`SELECT id, username, display_name, birthday, theme_style FROM users WHERE id = ?`, ownerID).
-		Scan(&owner.ID, &owner.Username, &owner.DisplayName, &owner.Birthday, &owner.ThemeStyle); err != nil {
+	if err := db.QueryRow(`SELECT id, username, display_name, birthday, holiday_reset, theme_style FROM users WHERE id = ?`, ownerID).
+		Scan(&owner.ID, &owner.Username, &owner.DisplayName, &owner.Birthday, &owner.HolidayReset, &owner.ThemeStyle); err != nil {
 		fail(w, 404, "user not found")
 		return
 	}
@@ -1035,6 +1062,76 @@ func canDeleteSuggestedItem(viewer *user, itemID string) bool {
 		return true
 	}
 	return suggestedByID != "" && suggestedByID == viewer.ID
+}
+
+// handleAddSuggestion adds a "suggested" idea to someone else's active list.
+// Connected users (and admins) may suggest items to a list they can view;
+// the action only runs while the viewer has suggestions enabled, and the
+// owner's item cap is still enforced. Suggested items are tagged with the
+// viewer's identity so the owner can manage them.
+func handleAddSuggestion(w http.ResponseWriter, r *http.Request) {
+	viewer := userFrom(r)
+	ownerID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	if viewer.ID == ownerID {
+		fail(w, 400, "use your own composer to add ideas to your list")
+		return
+	}
+	if !viewer.AllowSuggestions {
+		fail(w, 403, "suggestions are disabled")
+		return
+	}
+	if !canView(viewer.ID, viewer.IsAdmin, ownerID) {
+		fail(w, 403, "no access to this list")
+		return
+	}
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE id = ?`, ownerID).Scan(&exists); err != nil || exists == 0 {
+		fail(w, 404, "user not found")
+		return
+	}
+	var req struct {
+		Title string `json:"title"`
+		URL   string `json:"url"`
+		Notes string `json:"notes"`
+	}
+	if err := decode(w, r, &req); err != nil || strings.TrimSpace(req.Title) == "" {
+		fail(w, 400, "title required")
+		return
+	}
+	itemURL := strings.TrimSpace(req.URL)
+	if !validItemURL(itemURL) {
+		fail(w, 400, "url must be an absolute http(s) link")
+		return
+	}
+	listID, err := activeListID(ownerID)
+	if err != nil {
+		fail(w, 500, "list error")
+		return
+	}
+	atLimit, err := atItemLimit(listID)
+	if err != nil {
+		fail(w, 500, "list error")
+		return
+	}
+	if atLimit {
+		fail(w, 400, fmt.Sprintf("list is full (max %d items)", maxListItems))
+		return
+	}
+	id := newID()
+	if _, err := db.Exec(
+		`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id)
+		 VALUES (?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_order)+1 FROM items WHERE list_id = ?), 0), 'suggested', ?, ?)`,
+		id, listID, strings.TrimSpace(req.Title), itemURL, strings.TrimSpace(req.Notes), listID, viewer.DisplayName, viewer.ID,
+	); err != nil {
+		log.Printf("add suggestion: %v", err)
+		fail(w, 500, "insert failed")
+		return
+	}
+	writeJSON(w, 201, map[string]any{"id": id})
 }
 
 // handleDeleteSuggestedItem hard-deletes a shared suggested item. Only the
