@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS items (
 	visibility TEXT NOT NULL DEFAULT 'public',
 	suggested_by TEXT NOT NULL DEFAULT '',
 	suggested_by_id TEXT NOT NULL DEFAULT '',
+	created_by_id TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

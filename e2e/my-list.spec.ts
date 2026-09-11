@@ -12,9 +12,7 @@ test.describe('my list (owner)', () => {
 	test('owner can add an item to their list', async ({ page }) => {
 		await login(page, ALICE);
 		await page.goto('/');
-		// The private composer renders a second input ("Private gift idea"); scope
-		// to the main (non-private) composer.
-		const composer = page.locator('form.composer:not(.is-private)');
+		const composer = page.locator('form.composer');
 		await composer.getByLabel('Gift idea').click();
 		await composer.getByLabel('Gift idea').fill('E2E Teapot');
 		const addBtn = composer.getByRole('button', { name: 'Add item' });
@@ -46,7 +44,7 @@ test.describe('my list (owner)', () => {
 		await login(page, ALICE);
 		page.on('dialog', (d) => void d.accept());
 		await page.goto('/');
-		const composer = page.locator('form.composer:not(.is-private)');
+		const composer = page.locator('form.composer');
 		await composer.getByPlaceholder('Gift idea').click();
 		await composer.getByPlaceholder('Gift idea').fill('E2E Removable');
 		await composer.getByRole('button', { name: 'Add item' }).click();

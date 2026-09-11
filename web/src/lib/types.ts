@@ -27,12 +27,17 @@ export interface Item {
   claimedByName?: string;
   /** "Suggested by Jane D." tag on shared private items shown to connected users. */
   suggestedBy?: string;
+  /** True when the current viewer authored this shared idea (can retract it). */
+  suggestedByMe?: boolean;
 }
 
 export interface UserListResponse {
   user: Pick<User, "id" | "username" | "displayName" | "birthday" | "themeStyle" | "holidayReset">;
   items: Item[];
-  /** Owner-only private ideas (only returned when viewing your own list). */
+  /**
+   * Private ideas the current viewer saved for this list. Only returned when
+   * viewing someone else's list (never the owner's own list).
+   */
   privateItems?: Item[];
   isOwner: boolean;
 }

@@ -181,35 +181,35 @@ describe("UserList admin reveal-claimers", () => {
   });
 });
 
-describe("UserList suggestion composer", () => {
-  function submitSuggestion(container: HTMLElement, title: string): void {
-    const name = screen.getByLabelText("Suggest gift idea");
+describe("UserList private idea composer", () => {
+  function submitIdea(container: HTMLElement, title: string): void {
+    const name = screen.getByLabelText("Add private idea");
     fireEvent.input(name, { target: { value: title } });
     (name as HTMLElement).focus?.();
     const form = container.querySelector("form.composer") as HTMLFormElement;
     fireEvent.submit(form);
   }
 
-  it("shows a suggestion composer to a connected non-owner by default", async () => {
+  it("shows a private idea composer to a connected non-owner by default", async () => {
     mocks.userStore.set(PLEB);
     mocks.api.mockImplementation(() => Promise.resolve(response(false)));
     const { container } = render(UserList, { userId: "u7" });
     await flush();
-    const name = screen.getByLabelText("Suggest gift idea");
-    expect(name.getAttribute("placeholder")).toMatch(/Suggest an idea for Dave/);
+    const name = screen.getByLabelText("Add private idea");
+    expect(name.getAttribute("placeholder")).toMatch(/A private idea for Dave/);
     expect(container.querySelector("form.composer")).not.toBeNull();
   });
 
-  it("POSTs suggestions to the owner's list and reloads", async () => {
+  it("POSTs private ideas to the owner's list and reloads", async () => {
     mocks.userStore.set(PLEB);
     mocks.api.mockImplementation((path: string) =>
-      Promise.resolve(path.includes("suggestions") ? {} : response(false)),
+      Promise.resolve(path.includes("private-items") ? {} : response(false)),
     );
     const { container } = render(UserList, { userId: "u7" });
     await flush();
-    submitSuggestion(container, "A nice coffee");
+    submitIdea(container, "A nice coffee");
     await flush();
-    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/suggestions", {
+    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/private-items", {
       method: "POST",
       body: { title: "A nice coffee", url: "", notes: "" },
     });
@@ -219,7 +219,7 @@ describe("UserList suggestion composer", () => {
     mocks.api.mockImplementation(() => Promise.resolve(response(false, true)));
     render(UserList, { userId: "u7" });
     await flush();
-    expect(screen.queryByLabelText("Suggest gift idea")).toBeNull();
+    expect(screen.queryByLabelText("Add private idea")).toBeNull();
   });
 
   it("hides the composer when the owner has disabled suggestions", async () => {
@@ -227,21 +227,111 @@ describe("UserList suggestion composer", () => {
     mocks.api.mockImplementation(() => Promise.resolve(response(false)));
     render(UserList, { userId: "u7" });
     await flush();
-    expect(screen.queryByLabelText("Suggest gift idea")).toBeNull();
+    expect(screen.queryByLabelText("Add private idea")).toBeNull();
   });
 
   it("surfaces an error and keeps the composer when the POST fails", async () => {
     mocks.userStore.set(PLEB);
     mocks.api.mockImplementation((path: string) => {
-      if (path.includes("suggestions")) return Promise.reject(new Error("list is full"));
+      if (path.includes("private-items")) return Promise.reject(new Error("list is full"));
       return Promise.resolve(response(false));
     });
     const { container } = render(UserList, { userId: "u7" });
     await flush();
-    submitSuggestion(container, "Too late");
+    submitIdea(container, "Too late");
     await flush();
     expect(screen.getByRole("alert").textContent).toMatch(/list is full/);
-    expect(screen.getByLabelText("Suggest gift idea")).toBeTruthy();
+    expect(screen.getByLabelText("Add private idea")).toBeTruthy();
+  });
+});
+
+describe("UserList private ideas section", () => {
+  const PRIVATE = {
+    id: "pi1",
+    title: "Secret mug",
+    url: "",
+    notes: "their inside-joke mug",
+    removedAt: null,
+    claimed: false,
+    claimedByMe: false,
+  } as Item;
+
+  function responseWithPrivate(isOwner = false): UserListResponse {
+    return { user: OWNER, items: [], privateItems: [PRIVATE], isOwner };
+  }
+
+  it("renders the viewer's private ideas below the main list with claim, share and delete controls", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(responseWithPrivate()));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(within(container, "Private ideas")).not.toBeNull();
+    expect(screen.getByText("Secret mug")).toBeTruthy();
+    expect(screen.getByText("their inside-joke mug")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Claim" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Share Secret mug" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete private idea Secret mug" })).toBeTruthy();
+  });
+
+  it("does not render a private section when there are no private ideas", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(response(false)));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+    expect(container.querySelector(".private-list")).toBeNull();
+  });
+
+  it("shares an idea onto the list after confirmation", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(path.includes("private-items") ? {} : responseWithPrivate()),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Share Secret mug" }));
+    await flush();
+    expect(within(document.body, "Share this idea?")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Share" }));
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/private-items/pi1/share", {
+      method: "PUT",
+    });
+    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/list");
+  });
+
+  it("deletes a private idea after confirmation", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(path.includes("/private-items/pi1") ? {} : responseWithPrivate()),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete private idea Secret mug" }));
+    await flush();
+    expect(within(document.body, "Delete private idea?")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/users/u7/private-items/pi1", {
+      method: "DELETE",
+    });
+  });
+
+  it("marks a private idea claimed via the claim toggle", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(path.includes("/claim") ? {} : responseWithPrivate()),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Claim" }));
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/items/pi1/claim", { method: "PUT" });
   });
 });
 
@@ -265,6 +355,89 @@ function mkItem(partial: Partial<Item>): Item {
     ...partial,
   } as Item;
 }
+
+describe("UserList suggested ideas separation", () => {
+  it("splits ideas suggested by others into their own section", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() =>
+      Promise.resolve({
+        user: OWNER,
+        items: [
+          mkItem({ id: "i1", title: "Owner mug" }),
+          mkItem({ id: "i2", title: "Friend's pick", suggestedBy: "Bob Banana" }),
+        ],
+        isOwner: false,
+      }),
+    );
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(within(container, "Suggested")).not.toBeNull();
+    expect(screen.getByText("Suggested by Bob Banana")).toBeTruthy();
+
+    const suggestedList = container.querySelector("ul.suggested-list") as HTMLElement;
+    expect(suggestedList.textContent ?? "").toContain("Friend's pick");
+    expect(suggestedList.textContent ?? "").not.toContain("Owner mug");
+
+    const mainList = container.querySelectorAll("ul.items")[0] as HTMLElement;
+    expect(mainList.textContent ?? "").toContain("Owner mug");
+    expect(mainList.textContent ?? "").not.toContain("Friend's pick");
+  });
+
+  it("does not render a Suggested header when nothing has been shared", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(response(false)));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(container.querySelector(".section-divider")).toBeNull();
+  });
+
+  it("lets me unshare a suggested idea I authored via /api/suggested-items", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("suggested-items")
+          ? {}
+          : {
+              user: OWNER,
+              items: [
+                mkItem({
+                  id: "i2",
+                  title: "Friend's pick",
+                  suggestedBy: "Pam Peach",
+                  suggestedByMe: true,
+                }),
+              ],
+              isOwner: false,
+            },
+      ),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    fireEvent.click(screen.getByRole("button", { name: "Unshare Friend's pick" }));
+    await flush();
+    expect(within(document.body, "Unshare this idea?")).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Unshare" }));
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/suggested-items/i2", { method: "DELETE" });
+  });
+
+  it("does not show an unshare control on suggestions authored by others", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() =>
+      Promise.resolve({
+        user: OWNER,
+        items: [mkItem({ id: "i2", title: "Friend's pick", suggestedBy: "Bob Banana" })],
+        isOwner: false,
+      }),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+    expect(screen.queryByRole("button", { name: /Unshare/ })).toBeNull();
+  });
+});
 
 describe("UserList copy to clipboard", () => {
   it("omits claimed and archived items when the viewer is not the author", async () => {

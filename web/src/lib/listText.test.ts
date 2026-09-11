@@ -102,6 +102,64 @@ describe("buildListText", () => {
     expect(text).toContain("- One\n\n\n- Two");
     expect(text).not.toMatch(/- One\n\n\n\n/);
   });
+
+  it("moves ideas suggested by others under a trailing section for a visitor", () => {
+    const text = buildListText({
+      ownerName: "Alex",
+      event: "birthday",
+      items: [
+        item({ title: "From Alex", url: "" }),
+        item({ title: "Suggested one", url: "", suggestedBy: "Bob" }),
+        item({ title: "Suggested two", url: "", suggestedBy: "Carol" }),
+      ],
+      isOwner: false,
+    });
+    expect(text).toBe(
+      "Alex's birthday list:\n\n" +
+        "- From Alex\n\n\n" +
+        "Suggested ideas from others:\n\n" +
+        "- Suggested one\n\n\n" +
+        "- Suggested two",
+    );
+  });
+
+  it("puts extra spacing before the suggested-ideas header", () => {
+    const text = buildListText({
+      ownerName: "Alex",
+      event: "birthday",
+      items: [
+        item({ title: "From Alex", url: "" }),
+        item({ title: "Suggested one", url: "", suggestedBy: "Bob" }),
+      ],
+      isOwner: false,
+    });
+    expect(text).toMatch(/- From Alex\n\n\nSuggested ideas from others:/);
+  });
+
+  it("keeps suggested items inline for the list owner", () => {
+    const text = buildListText({
+      ownerName: "Alex",
+      event: "birthday",
+      items: [
+        item({ title: "From Alex", url: "" }),
+        item({ title: "Suggested one", url: "", suggestedBy: "Bob" }),
+      ],
+      isOwner: true,
+    });
+    expect(text).toContain("- From Alex\n\n\n- Suggested one");
+    expect(text).not.toContain("Suggested ideas from others");
+  });
+
+  it("omits the suggested section when there are no suggestions", () => {
+    const text = buildListText({
+      ownerName: "Alex",
+      event: "birthday",
+      items: [item({ title: "From Alex", url: "" })],
+      isOwner: false,
+    });
+    expect(text).toBe("Alex's birthday list:\n\n- From Alex");
+    expect(text).not.toContain("Suggested ideas from others");
+  });
 });
 
 describe("selectExportItems", () => {

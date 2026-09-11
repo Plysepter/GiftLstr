@@ -17,6 +17,7 @@
 	import { untrack } from 'svelte';
 	import { buildListText, copyToClipboard } from '../lib/listText.js';
 	import Composer from '../lib/design/Composer.svelte';
+	import ConfirmDialog from '../lib/ConfirmDialog.svelte';
 
 	let { userId }: { userId: string } = $props();
 
@@ -26,11 +27,14 @@
 	let openId = $state<string | null>(null);
 	let revealClaimers = $state(false);
 	let copied = $state(false);
-	let suggestError = $state('');
+	let privateError = $state('');
+	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
 
 	const canHover = matchMedia('(hover: hover) and (pointer: fine)').matches;
 
-	const canSuggest = $derived(data !== null && !data.isOwner && $user?.allowSuggestions !== false);
+	const canAddPrivate = $derived(data !== null && !data.isOwner && $user?.allowSuggestions !== false);
+
+	let privateIdeas = $derived(data?.privateItems ?? []);
 
 	let ownerSeason = $derived(
 		data?.user.birthday ? resolveSeason(data.user.birthday, prefs.events, data.user.holidayReset ?? '') : null
@@ -172,21 +176,92 @@
 		}
 	}
 
-	async function suggestItem(item: { title: string; url: string; notes: string }): Promise<boolean> {
-		suggestError = '';
+	async function addPrivateIdea(item: { title: string; url: string; notes: string }): Promise<boolean> {
+		privateError = '';
 		try {
-			await api(`/api/users/${userId}/suggestions`, { method: 'POST', body: item });
+			await api(`/api/users/${userId}/private-items`, { method: 'POST', body: item });
 			await load();
 			return true;
 		} catch (err) {
-			suggestError = err instanceof Error ? err.message : String(err);
+			privateError = err instanceof Error ? err.message : String(err);
 			return false;
+		}
+	}
+
+	function confirmDeletePrivate(item: Item): void {
+		confirmState = {
+			title: 'Delete private idea?',
+			message: `Delete “${item.title}” permanently? This cannot be undone.`,
+			confirmLabel: 'Delete',
+			danger: true,
+			action: async () => {
+				await deletePrivate(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function deletePrivate(item: Item): Promise<void> {
+		privateError = '';
+		try {
+			await api(`/api/users/${userId}/private-items/${item.id}`, { method: 'DELETE' });
+			await load();
+		} catch (err) {
+			privateError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function confirmSharePrivate(item: Item): void {
+		confirmState = {
+			title: 'Share this idea?',
+			message: `“${item.title}” will appear on ${data?.user.displayName.split(/\s+/)[0] ?? 'this'} list as “Suggested by you” and can be claimed.`,
+			confirmLabel: 'Share',
+			action: async () => {
+				await sharePrivate(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function sharePrivate(item: Item): Promise<void> {
+		privateError = '';
+		try {
+			await api(`/api/users/${userId}/private-items/${item.id}/share`, { method: 'PUT' });
+			await load();
+		} catch (err) {
+			privateError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function confirmUnshareSuggested(item: Item): void {
+		confirmState = {
+			title: 'Unshare this idea?',
+			message: `Remove “${item.title}” from the shared suggestions? This cannot be undone.`,
+			confirmLabel: 'Unshare',
+			danger: true,
+			action: async () => {
+				await deleteSuggested(item);
+				confirmState = null;
+			}
+		};
+	}
+
+	async function deleteSuggested(item: Item): Promise<void> {
+		privateError = '';
+		try {
+			await api(`/api/suggested-items/${item.id}`, { method: 'DELETE' });
+			await load();
+		} catch (err) {
+			privateError = err instanceof Error ? err.message : String(err);
 		}
 	}
 
 	let visible = $derived(
 		data ? data.items.filter((i) => !i.removedAt || i.claimed || i.claimedByMe) : []
 	);
+
+	let selfAuthored = $derived(visible.filter((i) => !i.suggestedBy));
+	let suggestedItems = $derived(visible.filter((i) => i.suggestedBy));
 
 	async function copyList(): Promise<void> {
 		if (!data) return;
@@ -213,7 +288,17 @@
 		openId = openId === id ? null : id;
 	}
 </script>
-<div>
+<div class="userlist">
+	{#if loading && !data}
+		<div class="page-loading">
+			<a href="#/lists" class="back-link">
+				<Icon name="chevron-left" size={16} strokeWidth={2.2} />
+				All lists
+			</a>
+			<span class="loader" aria-hidden="true"></span>
+		</div>
+	{:else}
+	<div class="page-body">
 	<PageHeader owner={data?.user.displayName ? data.user.displayName.split(/\s+/)[0] ?? '…' : '…'} accent="Wishlist">
 		<a href="#/lists" class="back-link">
 			<Icon name="chevron-left" size={16} strokeWidth={2.2} />
@@ -254,8 +339,8 @@
 		<ErrorState message={error} onRetry={() => void load()} />
 	{/if}
 
-	<ul class="items">
-		{#each visible as item (item.id)}
+<ul class="items">
+		{#each selfAuthored as item (item.id)}
 			<li class="itemcard" class:open={openId === item.id}>
 				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
 				<article class="card" onclick={(e) => onCardClick(e, item.id)}>
@@ -280,9 +365,6 @@
 					<div class="body">
 						{#if item.url}<LinkPreview url={item.url} />{/if}
 						{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
-						{#if item.suggestedBy}
-							<span class="badge suggested-badge">Suggested by {item.suggestedBy}</span>
-						{/if}
 						{#if revealClaimers && item.claimed && !item.claimedByMe && item.claimedByName}
 							<span class="badge claimed claim-owner-badge">claimed by {item.claimedByName}</span>
 						{/if}
@@ -293,25 +375,153 @@
 		{/each}
 	</ul>
 
+	{#if suggestedItems.length > 0}
+		<div class="section-divider suggested-divider">
+			<span class="section-label">
+				<Icon name="share" size={13} /> Suggested
+			</span>
+			<span class="section-hint">{data?.user.displayName ? data.user.displayName.split(/\s+/)[0] : 'they'} cannot see suggestions</span>
+		</div>
+		<ul class="items suggested-list">
+			{#each suggestedItems as item (item.id)}
+				<li class="itemcard" class:open={openId === item.id}>
+					<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+					<article class="card" onclick={(e) => onCardClick(e, item.id)}>
+						<div class="row1">
+							<ItemTile title={item.title} url={item.url} />
+							<div class="txt">
+								<h3>{item.title}</h3>
+								{#if item.url}<a class="domain" href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).host} ↗</a>{/if}
+							</div>
+							<button
+								class="claim-btn"
+								class:on={item.claimedByMe}
+								disabled={item.claimed && !item.claimedByMe}
+								onclick={(e) => toggleClaim(item, e)}
+							>
+								<Icon name={item.claimedByMe ? 'check' : 'heart'} size={15} />
+								{item.claimedByMe ? 'Unclaim' : item.claimed ? 'Claimed' : 'Claim'}
+							</button>
+						</div>
+						<div class="body">
+							{#if item.url}<LinkPreview url={item.url} />{/if}
+							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+						</div>
+						<div class="actions secondary-actions">
+							{#if item.suggestedBy}
+								<span class="badge suggested-badge">Suggested by {item.suggestedBy}</span>
+							{/if}
+							{#if revealClaimers && item.claimed && !item.claimedByMe && item.claimedByName}
+								<span class="badge claimed claim-owner-badge">claimed by {item.claimedByName}</span>
+							{/if}
+							{#if item.removedAt}<span class="badge warn removed-badge">removed by owner</span>{/if}
+							{#if item.suggestedByMe}
+								<button
+									class="act del"
+									aria-label="Unshare {item.title}"
+									title="Remove from shared suggestions"
+									onclick={() => confirmUnshareSuggested(item)}
+								>
+									<Icon name="trash" />
+								</button>
+							{/if}
+						</div>
+					</article>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
 	<EmptyState
 		icon="gift"
 		title="No gifts on this list yet"
-		hint="Check back later — maybe they are still thinking."
+		hint="Check back later. Maybe they are still thinking."
 		ready={!loading && !error && !network.offline && data !== null && visible.length === 0}
 	/>
 
-	{#if canSuggest}
-		<div class="suggest-wrap">
-			{#if suggestError}
-				<p class="error" role="alert">{suggestError}</p>
+	{#if privateIdeas.length > 0}
+		<div class="section-divider private-divider">
+			<span class="section-label">
+				<Icon name="key" size={13} /> Private ideas
+			</span>
+			<span class="section-hint">Only you can see these</span>
+		</div>
+		<ul class="items private-list">
+			{#each privateIdeas as item (item.id)}
+				<li class="itemcard private-item" class:open={openId === item.id}>
+					<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
+					<article class="card" onclick={(e) => onCardClick(e, item.id)}>
+						<div class="row1 private-row1">
+							<ItemTile title={item.title} url={item.url} />
+							<div class="txt">
+								<h3>{item.title}</h3>
+								{#if item.url}<a class="domain" href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).host} ↗</a>{/if}
+							</div>
+							<button
+								class="claim-btn"
+								class:on={item.claimedByMe}
+								onclick={(e) => toggleClaim(item, e)}
+							>
+								<Icon name={item.claimedByMe ? 'check' : 'heart'} size={15} />
+								{item.claimedByMe ? 'Unclaim' : 'Claim'}
+							</button>
+						</div>
+						<div class="body">
+							{#if item.url}<LinkPreview url={item.url} />{/if}
+							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+							{#if item.claimedByMe}
+								<span class="badge claimed">your pick</span>
+							{/if}
+						</div>
+						<div class="actions secondary-actions">
+							<button
+								class="act share"
+								aria-label="Share {item.title}"
+								title="Share publicly on this list"
+								onclick={() => confirmSharePrivate(item)}
+							>
+								<Icon name="share" />
+							</button>
+							<button
+								class="act del"
+								aria-label="Delete private idea {item.title}"
+								title="Delete permanently"
+								onclick={() => confirmDeletePrivate(item)}
+							>
+								<Icon name="trash" />
+							</button>
+						</div>
+					</article>
+				</li>
+			{/each}
+		</ul>
+	{/if}
+
+	{#if canAddPrivate}
+		<div class="suggest-bar">
+			{#if privateError}
+				<p class="error" role="alert">{privateError}</p>
 			{/if}
 			<Composer
-				onadd={suggestItem}
-				isPrivate
-				label="Suggest gift idea"
-				placeholder={'Suggest an idea for ' + (data?.user.displayName.split(/\s+/)[0] ?? 'them') + '…'}
+				onadd={addPrivateIdea}
+				label="Add private idea"
+				placeholder={'A private idea for ' + (data?.user.displayName.split(/\s+/)[0] ?? 'them') + '…'}
 			/>
 		</div>
+	{/if}
+
+	{#if confirmState}
+		<ConfirmDialog
+			open={true}
+			title={confirmState.title}
+			message={confirmState.message}
+			confirmLabel={confirmState.confirmLabel}
+			danger={confirmState.danger}
+			onconfirm={confirmState.action}
+			oncancel={() => (confirmState = null)}
+		/>
+	{/if}
+	</div>
 	{/if}
 </div>
 
@@ -373,6 +583,31 @@
 		margin-right: 0.4rem;
 	}
 
+	.act.share {
+		background: color-mix(in srgb, var(--acc) 14%, transparent);
+		color: var(--acc);
+	}
+	.private-row1 {
+		flex-wrap: wrap;
+	}
+	.private-row1 .claim-btn {
+		flex-shrink: 0;
+	}
+	/* Mirror the My List mobile treatment: auxiliary actions sit in a
+	   right-aligned row below the card body. */
+	.secondary-actions {
+		margin-top: 0.65rem;
+		justify-content: flex-end;
+		align-items: center;
+	}
+	.secondary-actions .badge {
+		margin-top: 0;
+	}
+	/* Suggested item: badges stay left, delete button pushed to the far right. */
+	.suggested-list .secondary-actions .act.del {
+		margin-left: auto;
+	}
+
 	.items {
 		list-style: none;
 		margin: 0;
@@ -407,6 +642,152 @@
 		transform: scale(0.97);
 	}
 
-	.suggest-wrap { margin-top: 1.3rem; padding-top: 0.5rem; border-top: 1px solid var(--line); }
-	.suggest-wrap .error { margin: 0 0 0.5rem; }
+	.userlist {
+		padding-bottom: calc(var(--nav-h) + 185px);
+	}
+
+	.page-loading {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		padding: 0.75rem 0;
+		min-height: calc(100dvh - var(--nav-h) - 9rem);
+	}
+
+	/* Centered bouncy-dot loader; colours follow the theme. */
+	.loader {
+		--color-1: var(--acc, #ff3d00);
+		--color-2: var(--ink, #fff);
+		--size: 1px;
+		width: calc(50 * var(--size));
+		height: calc(165 * var(--size));
+		position: absolute;
+		left: 50%;
+		top: 50%;
+		transform: translate(-50%, -50%);
+	}
+	.loader::before {
+		content: '';
+		position: absolute;
+		left: 50%;
+		top: 0;
+		transform: translate(-50%, 0);
+		width: calc(16 * var(--size));
+		height: calc(16 * var(--size));
+		background: var(--color-1);
+		border-radius: 50%;
+		animation: bounce 2.86s linear infinite;
+	}
+	.loader::after {
+		content: '';
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		margin: auto;
+		height: calc(48 * var(--size));
+		width: calc(48 * var(--size));
+		background: var(--color-2);
+		border-radius: calc(4 * var(--size));
+		animation: rotate 2.86s linear infinite;
+	}
+	@keyframes bounce {
+		0%,
+		50%,
+		100% {
+			transform: translate(-50%, 0);
+			height: calc(20 * var(--size));
+		}
+		20% {
+			transform: translate(-25%, calc(85 * var(--size)));
+			height: calc(28 * var(--size));
+		}
+		25% {
+			transform: translate(-25%, calc(110 * var(--size)));
+			height: calc(12 * var(--size));
+		}
+		70% {
+			transform: translate(-75%, calc(85 * var(--size)));
+			height: calc(28 * var(--size));
+		}
+		75% {
+			transform: translate(-75%, calc(108 * var(--size)));
+			height: calc(12 * var(--size));
+		}
+	}
+	@keyframes rotate {
+		0%,
+		50%,
+		100% {
+			transform: rotate(0deg);
+		}
+		25% {
+			transform: rotate(90deg);
+		}
+		75% {
+			transform: rotate(-90deg);
+		}
+	}
+
+	.page-body {
+		animation: page-in 240ms ease-out both;
+	}
+	@keyframes page-in {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+
+	.section-divider {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.6rem;
+		margin: 1.6rem 0 0.4rem;
+	}
+	.section-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.78rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+	}
+	.section-hint {
+		font-size: 0.74rem;
+		color: var(--muted);
+		opacity: 0.8;
+	}
+
+	.suggest-bar {
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: calc(var(--kb, 0px) + var(--nav-h));
+		z-index: 50;
+		padding: 0.6rem 0.9rem 0.7rem;
+		background: color-mix(in srgb, var(--bg) 95%, transparent);
+		border-top: 1px solid var(--line);
+	}
+	.suggest-bar .error {
+		margin: 0 0 0.5rem;
+		text-align: center;
+		color: #ef4444;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+	.suggest-bar :global(form.composer) {
+		position: static;
+		max-width: 610px;
+		margin: 0 auto;
+		padding: 0;
+		background: transparent;
+		border-top: none;
+	}
 </style>

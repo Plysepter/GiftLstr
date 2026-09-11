@@ -88,6 +88,7 @@ func main() {
 		`ALTER TABLE items ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`,
 		`ALTER TABLE items ADD COLUMN suggested_by TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE items ADD COLUMN suggested_by_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE items ADD COLUMN created_by_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN holiday_reset TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
 	} {
@@ -626,44 +627,44 @@ func archiveUserList(u *user, now time.Time) error {
 		//   - Unclaimed private items   -> roll over: copy as private
 		//   - Claimed suggested items   -> revealed to owner: copy as public
 		//   - Unclaimed suggested items -> dropped (not rolled over)
-		rows, err := tx.Query(`SELECT i.id, i.title, i.url, i.notes, i.sort_order, i.visibility,
+		rows, err := tx.Query(`SELECT i.id, i.title, i.url, i.notes, i.sort_order, i.visibility, i.created_by_id,
 				EXISTS(SELECT 1 FROM claims c WHERE c.item_id = i.id) AS claimed
 			FROM items i WHERE i.list_id = ? AND i.removed_at IS NULL`, listID)
 		if err != nil {
 			return err
 		}
 		type fieldVal struct {
-			title, url, notes, visibility string
-			sort                           int
+			title, url, notes, visibility, createdBy string
+			sort                                     int
 		}
 		var carry []fieldVal
 		for rows.Next() {
-			var id, title, url, notes, visibility string
+			var id, title, url, notes, visibility, createdBy string
 			var sort int
 			var claimed bool
-			if rows.Scan(&id, &title, &url, &notes, &sort, &visibility, &claimed) != nil {
+			if rows.Scan(&id, &title, &url, &notes, &sort, &visibility, &createdBy, &claimed) != nil {
 				continue
 			}
 			switch visibility {
 			case "private", "suggested":
-				// Unclaimed private items roll over (stay private); claimed
-				// private/suggested items are revealed as public. Unclaimed
-				// suggested items are dropped.
+				// Unclaimed private items roll over (stay private, still tagged
+				// with whoever saved them); claimed private/suggested items are
+				// revealed as public. Unclaimed suggested items are dropped.
 				if !claimed && visibility == "private" {
-					carry = append(carry, fieldVal{title, url, notes, "private", sort})
+					carry = append(carry, fieldVal{title, url, notes, "private", createdBy, sort})
 				} else if claimed {
-					carry = append(carry, fieldVal{title, url, notes, "public", sort})
+					carry = append(carry, fieldVal{title, url, notes, "public", "", sort})
 				}
 			default: // public
 				if !claimed {
-					carry = append(carry, fieldVal{title, url, notes, visibility, sort})
+					carry = append(carry, fieldVal{title, url, notes, visibility, "", sort})
 				}
 			}
 		}
 		rows.Close()
 		for _, f := range carry {
-			if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id) VALUES (?, ?, ?, ?, ?, ?, ?, '', '')`,
-				newID(), newListID, f.title, f.url, f.notes, f.sort, f.visibility); err != nil {
+			if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?)`,
+				newID(), newListID, f.title, f.url, f.notes, f.sort, f.visibility, f.createdBy); err != nil {
 				return err
 			}
 		}

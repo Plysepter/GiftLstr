@@ -120,6 +120,18 @@ func addItemRow(t *testing.T, listID, title string) string {
 	return id
 }
 
+// addPrivateItemRow inserts a private idea tagged with a creator on the given
+// user's active list, the way the private-ideas API would store it.
+func addPrivateItemRow(t *testing.T, ownerID, createdByID, title string) string {
+	t.Helper()
+	id := newID()
+	if _, err := db.Exec(`INSERT INTO items (id, list_id, title, visibility, created_by_id) VALUES (?, ?, ?, 'private', ?)`,
+		id, activeList(t, ownerID), title, createdByID); err != nil {
+		t.Fatalf("add private item: %v", err)
+	}
+	return id
+}
+
 func connectUsers(t *testing.T, a, b string) {
 	t.Helper()
 	for _, pair := range [][2]string{{a, b}, {b, a}} {
@@ -222,65 +234,263 @@ func TestProfileUpdateHolidayResetAndSuggestions(t *testing.T) {
 	mustStatus(t, w, http.StatusBadRequest)
 }
 
-func TestAddSuggestionOnOthersList(t *testing.T) {
-	owner := seedUser(t, "c_sug_owner", "sug_owner", false)
-	viewer := seedUser(t, "c_sug_viewer", "sug_viewer", false)
+func TestAddPrivateIdeaOnOthersList(t *testing.T) {
+	owner := seedUser(t, "c_priv_owner", "priv_owner", false)
+	viewer := seedUser(t, "c_priv_viewer", "priv_viewer", false)
+	other := seedUser(t, "c_priv_other", "priv_other", false)
 	stranger := strangerUser(t)
 	connectUsers(t, owner.ID, viewer.ID)
+	connectUsers(t, owner.ID, other.ID)
 
-	// Strangers may not suggest.
-	w, _ := doJSON(t, stranger, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Bob"})
+	addPath := func(ownerID string) string {
+		return fmt.Sprintf("/api/users/%s/private-items", ownerID)
+	}
+
+	// Strangers may not save a private idea.
+	w, _ := doJSON(t, stranger, http.MethodPost, addPath(owner.ID), body{"title": "Bob"})
 	mustStatus(t, w, http.StatusForbidden)
 
-	// Owners may not suggest to their own list.
-	w, _ = doJSON(t, owner, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Me"})
+	// Owners may not save a private idea for their own list.
+	w, _ = doJSON(t, owner, http.MethodPost, addPath(owner.ID), body{"title": "Me"})
 	mustStatus(t, w, http.StatusBadRequest)
 
-	// A connected viewer can suggest an item.
-	w, resp := doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Headphones", "url": "https://x.co"})
+	// A connected viewer saves a private idea.
+	w, resp := doJSON(t, viewer, http.MethodPost, addPath(owner.ID), body{"title": "Headphones", "url": "https://x.co"})
 	mustStatus(t, w, http.StatusCreated)
 	itemID, _ := resp["id"].(string)
 	if itemID == "" {
-		t.Fatal("expected a suggestion item id in response")
+		t.Fatal("expected a private idea item id in response")
 	}
-	var visibility, suggestedBy, suggestedByID string
-	if err := db.QueryRow(`SELECT visibility, suggested_by, suggested_by_id FROM items WHERE id = ?`, itemID).Scan(&visibility, &suggestedBy, &suggestedByID); err != nil {
+	var visibility, createdBy string
+	if err := db.QueryRow(`SELECT visibility, created_by_id FROM items WHERE id = ?`, itemID).Scan(&visibility, &createdBy); err != nil {
 		t.Fatal(err)
 	}
-	if visibility != "suggested" || suggestedBy != "sug_viewer" || suggestedByID != viewer.ID {
-		t.Errorf("suggestion tags = (%q, %q, %q), want (suggested, sug_viewer, %s)", visibility, suggestedBy, suggestedByID, viewer.ID)
+	if visibility != "private" || createdBy != viewer.ID {
+		t.Errorf("private idea tags = (%q, %q), want (private, %s)", visibility, createdBy, viewer.ID)
 	}
 
-	// The owner sees the suggestion on their list.
+	// The owner's live list never shows it (nor privateItems).
 	_, resp = doJSON(t, owner, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
-	sawSuggestion := false
-	if resp["items"] != nil {
-		for _, raw := range resp["items"].([]any) {
-			it := raw.(map[string]any)
-			if it["id"].(string) == itemID && it["suggestedBy"] == "sug_viewer" {
-				sawSuggestion = true
-			}
-		}
+	if n := len(resp["items"].([]any)); n != 0 {
+		t.Errorf("owner saw %d items, want 0 (shared ideas hidden from owner)", n)
 	}
-	if !sawSuggestion {
-		t.Error("owner should see the viewer's suggestion on their list")
+	if resp["privateItems"] != nil {
+		t.Errorf("owner must not receive privateItems, got %v", resp["privateItems"])
+	}
+
+	// The author sees it only in privateItems, never among the shared items.
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	if n := len(resp["items"].([]any)); n != 0 {
+		t.Errorf("author shared items = %d, want 0", n)
+	}
+	priv := resp["privateItems"].([]any)
+	if len(priv) != 1 || priv[0].(map[string]any)["id"] != itemID {
+		t.Errorf("author privateItems = %v, want just %s", priv, itemID)
+	}
+
+	// Other connected viewers get nothing private and see no items.
+	_, resp = doJSON(t, other, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	if resp["privateItems"] != nil {
+		t.Error("other viewer must not receive privateItems")
 	}
 
 	// Blank title rejected.
-	w, _ = doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "  "})
+	w, _ = doJSON(t, viewer, http.MethodPost, addPath(owner.ID), body{"title": "  "})
 	mustStatus(t, w, http.StatusBadRequest)
 
-	// Unknown owner 404s (even for an admin who bypasses the canView check).
-	admin := seedUser(t, "c_sug_admin", "sug_admin", true)
-	w, _ = doJSON(t, admin, http.MethodPost, "/api/users/00000000-0000-0000-0000-000000000000/suggestions", body{"title": "Ghost"})
+	// Unknown owner 404s even for a bypassing admin.
+	admin := seedUser(t, "c_priv_admin", "priv_admin", true)
+	w, _ = doJSON(t, admin, http.MethodPost, "/api/users/00000000-0000-0000-0000-000000000000/private-items", body{"title": "Ghost"})
 	mustStatus(t, w, http.StatusNotFound)
 
 	// Disabled suggestions are enforced server-side.
 	db.Exec(`UPDATE users SET allow_suggestions = 0 WHERE id = ?`, viewer.ID)
-	w, resp = doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/suggestions", owner.ID), body{"title": "Nope"})
+	w, resp = doJSON(t, viewer, http.MethodPost, addPath(owner.ID), body{"title": "Nope"})
 	mustStatus(t, w, http.StatusForbidden)
 	if resp["error"] == nil || !strings.Contains(resp["error"].(string), "disabled") {
-		t.Errorf("disabled suggestion error = %v, want message mentioning disabled", resp["error"])
+		t.Errorf("disabled error = %v, want message mentioning disabled", resp["error"])
+	}
+	db.Exec(`UPDATE users SET allow_suggestions = 1 WHERE id = ?`, viewer.ID)
+
+	// The author can delete their own private idea; it is never exposed to others.
+	w, _ = doJSON(t, viewer, http.MethodDelete, fmt.Sprintf("/api/users/%s/private-items/%s", owner.ID, itemID), nil)
+	mustStatus(t, w, http.StatusOK)
+	otherID := addPrivateItemRow(t, owner.ID, other.ID, "Snoop")
+	w, _ = doJSON(t, viewer, http.MethodDelete, fmt.Sprintf("/api/users/%s/private-items/%s", owner.ID, otherID), nil)
+	mustStatus(t, w, http.StatusNotFound)
+}
+
+func TestSharePrivateIdea(t *testing.T) {
+	owner := seedUser(t, "c_share_owner", "share_owner", false)
+	viewer := seedUser(t, "c_share_viewer", "share_viewer", false)
+	other := seedUser(t, "c_share_other", "share_other", false)
+	connectUsers(t, owner.ID, viewer.ID)
+	connectUsers(t, owner.ID, other.ID)
+
+	itemID := addPrivateItemRow(t, owner.ID, viewer.ID, "Projector")
+
+	// Someone else's private idea cannot be shared.
+	w, _ := doJSON(t, other, http.MethodPut, fmt.Sprintf("/api/users/%s/private-items/%s/share", owner.ID, itemID), nil)
+	mustStatus(t, w, http.StatusNotFound)
+
+	// Sharing publishes it as a "suggested" item tagged with the author.
+	w, _ = doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/users/%s/private-items/%s/share", owner.ID, itemID), nil)
+	mustStatus(t, w, http.StatusOK)
+
+	var visibility, suggestedBy, suggestedByID, createdBy string
+	if err := db.QueryRow(`SELECT visibility, suggested_by, suggested_by_id, created_by_id FROM items WHERE id = ?`, itemID).Scan(&visibility, &suggestedBy, &suggestedByID, &createdBy); err != nil {
+		t.Fatal(err)
+	}
+	if visibility != "suggested" || suggestedBy != "share_viewer" || suggestedByID != viewer.ID || createdBy != "" {
+		t.Errorf("shared item tags = (%q, %q, %q, %q), want (suggested, share_viewer, %s, '')", visibility, suggestedBy, suggestedByID, createdBy, viewer.ID)
+	}
+
+	// It left the author's private list.
+	_, resp := doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	if resp["privateItems"] != nil && len(resp["privateItems"].([]any)) != 0 {
+		t.Errorf("privateItems after share = %v, want empty", resp["privateItems"])
+	}
+
+	// The owner's live list still hides it.
+	_, resp = doJSON(t, owner, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	if len(resp["items"].([]any)) != 0 {
+		t.Error("owner should not see shared ideas on the live list")
+	}
+	if resp["privateItems"] != nil {
+		t.Error("owner must not receive privateItems")
+	}
+
+	// The author and other connected viewers see it as a suggested item;
+	// only the author gets suggestedByMe.
+	_, resp = doJSON(t, other, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	otherSaw := false
+	for _, raw := range resp["items"].([]any) {
+		it := raw.(map[string]any)
+		if it["id"] == itemID {
+			otherSaw = true
+			if it["suggestedBy"] != "share_viewer" || it["suggestedByMe"] == true {
+				t.Errorf("other viewer sees %v, want suggestedBy=share_viewer and suggestedByMe=false", it)
+			}
+		}
+	}
+	if !otherSaw {
+		t.Error("connected viewer should see the shared idea")
+	}
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	authorSaw := false
+	for _, raw := range resp["items"].([]any) {
+		it := raw.(map[string]any)
+		if it["id"] == itemID {
+			authorSaw = true
+			if it["suggestedByMe"] != true {
+				t.Errorf("author should see suggestedByMe on their shared idea, got %v", it)
+			}
+		}
+	}
+	if !authorSaw {
+		t.Error("author should see their shared idea among the items")
+	}
+
+	// Only the author (or an admin) can retract a shared idea.
+	w, _ = doJSON(t, other, http.MethodDelete, fmt.Sprintf("/api/suggested-items/%s", itemID), nil)
+	mustStatus(t, w, http.StatusForbidden)
+	w, _ = doJSON(t, viewer, http.MethodDelete, fmt.Sprintf("/api/suggested-items/%s", itemID), nil)
+	mustStatus(t, w, http.StatusOK)
+	var n int
+	db.QueryRow(`SELECT COUNT(*) FROM items WHERE id = ?`, itemID).Scan(&n)
+	if n != 0 {
+		t.Error("shared idea should be hard-deleted after the author retracts it")
+	}
+
+	// Sharing is capped by the owner's item limit.
+	full := seedUser(t, "c_share_full", "share_full", false)
+	fullList := activeList(t, full.ID)
+	for i := 0; i < maxListItems; i++ {
+		addItemRow(t, fullList, fmt.Sprintf("Item %d", i))
+	}
+	itemID = addPrivateItemRow(t, full.ID, viewer.ID, "Overflow")
+	w, resp = doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/users/%s/private-items/%s/share", full.ID, itemID), nil)
+	mustStatus(t, w, http.StatusBadRequest)
+	if resp["error"] == nil || !strings.Contains(resp["error"].(string), "full") {
+		t.Errorf("cap error = %v, want message mentioning full", resp["error"])
+	}
+	var vis string
+	db.QueryRow(`SELECT visibility FROM items WHERE id = ?`, itemID).Scan(&vis)
+	if vis != "private" {
+		t.Errorf("blocked share should leave the idea private, got %q", vis)
+	}
+}
+
+func TestArchiveRevealsClaimedPrivateAndShared(t *testing.T) {
+	owner := seedUser(t, "c_arc_owner", "arc_owner", false)
+	viewer := seedUser(t, "c_arc_viewer", "arc_viewer", false)
+	connectUsers(t, owner.ID, viewer.ID)
+	listID := activeList(t, owner.ID)
+
+	pub := addItemRow(t, listID, "Public")
+	privUnclaimed := addPrivateItemRow(t, owner.ID, viewer.ID, "Private unclaimed")
+	privClaimed := addPrivateItemRow(t, owner.ID, viewer.ID, "Private claimed")
+	_, resp := doJSON(t, viewer, http.MethodPost, fmt.Sprintf("/api/users/%s/private-items", owner.ID), body{"title": "Shared claimed"})
+	sugID, _ := resp["id"].(string)
+	if sugID == "" {
+		t.Fatal("expected private idea id")
+	}
+
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", privClaimed), nil)
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", sugID), nil)
+
+	// Archive through the real endpoint so the rollover runs.
+	admin := seedUser(t, "c_arc_admin", "arc_admin", true)
+	w, _ := doJSON(t, admin, http.MethodPost, fmt.Sprintf("/api/admin/users/%s/archive", owner.ID), nil)
+	mustStatus(t, w, http.StatusOK)
+
+	// The owner's archive reveals claimed private/shared plus their own public
+	// items; unclaimed private and unclaimed shared items stay hidden.
+	_, resp = doJSON(t, owner, http.MethodGet, fmt.Sprintf("/api/archive/%s", listID), nil)
+	visible := map[string]bool{}
+	for _, raw := range resp["items"].([]any) {
+		visible[raw.(map[string]any)["id"].(string)] = true
+	}
+	for _, want := range []string{pub, privClaimed, sugID} {
+		if !visible[want] {
+			t.Errorf("archive should reveal item %s, got visible=%v", want, visible)
+		}
+	}
+	if visible[privUnclaimed] {
+		t.Error("unclaimed private idea should not appear in the owner's archive")
+	}
+
+	// Rollover: unclaimed private carries its author and stays private; the
+	// claimed items (private + shared) are revealed as public on the new list;
+	// nothing rolls over as suggested.
+	var newListID string
+	db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND archived_at IS NULL`, owner.ID).Scan(&newListID)
+	var rolledPriv, rolledCB string
+	err := db.QueryRow(`SELECT id, created_by_id FROM items WHERE list_id = ? AND visibility = 'private'`, newListID).Scan(&rolledPriv, &rolledCB)
+	if err != nil {
+		t.Fatalf("expected unclaimed private idea to roll over: %v", err)
+	}
+	if rolledCB != viewer.ID {
+		t.Errorf("rollover created_by_id = %q, want %s", rolledCB, viewer.ID)
+	}
+	var nSug int
+	db.QueryRow(`SELECT COUNT(*) FROM items WHERE list_id = ? AND visibility = 'suggested'`, newListID).Scan(&nSug)
+	if nSug != 0 {
+		t.Errorf("unclaimed shared ideas should be dropped on rollover, found %d", nSug)
+	}
+	var revealed []string
+	rows, err := db.Query(`SELECT title FROM items WHERE list_id = ? AND visibility = 'public'`, newListID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var title string
+		rows.Scan(&title)
+		revealed = append(revealed, title)
+	}
+	if len(revealed) != 3 {
+		t.Errorf("new active list should reveal claimed private + claimed shared + kept public = 3 items, got %v", revealed)
 	}
 }
 

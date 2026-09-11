@@ -83,7 +83,63 @@ test.describe('archive / reset flow', () => {
 		const res = await request.get(`/api/archive/${index.lists[0].id}`, { headers: auth(BOB) });
 		expect([403, 404]).toContain(res.status());
 	});
+
+	test('archive reveals claimed items from private and shared lists; unclaimed ones stay hidden', async ({
+		request,
+	}) => {
+		const stamp = Date.now();
+		const claimedPrivate = `E2E Arc Claimed Priv ${stamp}`;
+		const unclaimedPrivate = `E2E Arc Private Unclaimed ${stamp}`;
+		const claimedShared = `E2E Arc Shared Claimed ${stamp}`;
+		const unclaimedShared = `E2E Arc Shared Unclaimed ${stamp}`;
+
+		const privA = await savePrivate(request, BOB, aliceId, claimedPrivate);
+		await savePrivate(request, BOB, aliceId, unclaimedPrivate);
+		const privC = await savePrivate(request, BOB, aliceId, claimedShared);
+		const privD = await savePrivate(request, BOB, aliceId, unclaimedShared);
+		await request.put(`/api/users/${aliceId}/private-items/${privA}/share`, { headers: auth(BOB) });
+		await request.put(`/api/users/${aliceId}/private-items/${privD}/share`, { headers: auth(BOB) });
+
+		// Bob claims one private idea and one shared idea before the reset.
+		expect((await request.put(`/api/items/${privA}/claim`, { headers: auth(BOB) })).ok()).toBeTruthy();
+		expect((await request.put(`/api/items/${privC}/claim`, { headers: auth(BOB) })).ok()).toBeTruthy();
+
+		const year = new Date().getUTCFullYear();
+		expect((await request.post('/api/e2e/archive', { headers: auth(ALICE), data: { date: `${year}-12-30` } })).ok()).toBeTruthy();
+
+		// The owner's archive reveals their public + claimed (private or
+		// shared) items; unclaimed private and unclaimed shared stay hidden.
+		const archiveIndex = await (await request.get('/api/archive', { headers: auth(ALICE) })).json();
+		const first = archiveIndex.lists[0];
+		const archive = await (await request.get(`/api/archive/${first.id}`, { headers: auth(ALICE) })).json();
+		const archiveTitles = archive.items.map((i: { title: string }) => i.title);
+		expect(archiveTitles).toContain(claimedPrivate);
+		expect(archiveTitles).toContain(claimedShared);
+		expect(archiveTitles).not.toContain(unclaimedPrivate);
+		expect(archiveTitles).not.toContain(unclaimedShared);
+
+		// On the new active list: claimed items are revealed as public, the
+		// unclaimed private idea rolls over privately to its author, and the
+		// unclaimed shared idea is dropped.
+		const bobList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(BOB) })).json();
+		const itemTitles = bobList.items.map((i: { title: string }) => i.title);
+		const privateTitles = bobList.privateItems.map((i: { title: string }) => i.title);
+		expect(itemTitles).toContain(claimedPrivate);
+		expect(itemTitles).toContain(claimedShared);
+		expect(itemTitles).not.toContain(unclaimedShared);
+		expect(privateTitles).toContain(unclaimedPrivate);
+		expect(privateTitles).not.toContain(unclaimedShared);
+	});
 });
+
+async function savePrivate(request: import('@playwright/test').APIRequestContext, token: string, ownerId: string, title: string): Promise<string> {
+	const res = await request.post(`/api/users/${ownerId}/private-items`, {
+		headers: auth(token),
+		data: { title, url: '' },
+	});
+	expect(res.ok()).toBeTruthy();
+	return (await res.json()).id;
+}
 
 test.describe('lists page pagination', () => {
 	test.use({ storageState: { cookies: [], origins: [] } });

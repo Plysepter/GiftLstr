@@ -38,15 +38,31 @@ export function selectExportItems(items: Item[], isOwner: boolean): Item[] {
  *
  * Heading on the first line, one blank line before the first item, two blank
  * lines between items, and a single blank line between an item and its notes.
+ *
+ * When exporting someone else's list, ideas suggested by others are pulled out
+ * into their own trailing section, preceded by extra (two blank line) spacing:
+ *
+ *
+ *   Suggested ideas from others:
+ *
+ *   - {url or name}
  */
 export function buildListText({ ownerName, event, items, isOwner }: ListTextOptions): string {
   const heading = event ? `${ownerName}'s ${event} list:` : `${ownerName}'s list:`;
-  const blocks = selectExportItems(items, isOwner).map(({ title, url, notes }) => {
+  const format = ({ title, url, notes }: Item) => {
     const line = `- ${url || title}`;
     return notes ? `${line}\n\nNotes: ${notes}` : line;
-  });
-  const body = blocks.join("\n\n\n");
-  return body ? `${heading}\n\n${body}` : heading;
+  };
+  const selected = selectExportItems(items, isOwner);
+  const isVisitor = !isOwner;
+  const suggested = isVisitor ? selected.filter((i) => i.suggestedBy).map(format) : [];
+  const own = (isVisitor ? selected.filter((i) => !i.suggestedBy) : selected).map(format);
+  const body = own.join("\n\n\n");
+  let text = body ? `${heading}\n\n${body}` : heading;
+  if (isVisitor && suggested.length > 0) {
+    text += `\n\n\nSuggested ideas from others:\n\n${suggested.join("\n\n\n")}`;
+  }
+  return text;
 }
 
 /** Copies text to the clipboard, falling back to a hidden textarea. */

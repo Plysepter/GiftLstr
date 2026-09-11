@@ -6,12 +6,10 @@
 
 	let {
 		onadd,
-		isPrivate = false,
 		placeholder,
 		label
 	}: {
 		onadd: (item: { title: string; url: string; notes: string }) => Promise<boolean> | boolean | void;
-		isPrivate?: boolean;
 		placeholder?: string;
 		label?: string;
 	} = $props();
@@ -108,7 +106,7 @@
 	}
 </script>
 
-<form class={`composer${isPrivate ? ' is-private' : ''}`} onsubmit={submit}>
+<form class="composer" onsubmit={submit}>
 	<div class="composer-inner">
 		{#if expanded}
 			<input
@@ -116,7 +114,7 @@
 				type="url"
 				inputmode="url"
 				autocomplete="off"
-				placeholder="Paste a link — I’ll fetch the name &amp; preview"
+				placeholder="Paste a link, I’ll fetch the name &amp; preview"
 				bind:value={url}
 				onchange={onUrlChange}
 				aria-label="Link URL"
@@ -132,11 +130,11 @@
 		<div class="namerow">
 			<input
 				class="name"
-				placeholder={placeholder ?? (isPrivate ? 'Add a private idea…' : 'Gift idea…')}
+				placeholder={placeholder ?? 'Gift idea…'}
 				bind:value={title}
 				onfocus={() => setExpanded(true)}
 				onpaste={onNamePaste}
-				aria-label={label ?? (isPrivate ? 'Private gift idea' : 'Gift idea')}
+				aria-label={label ?? 'Gift idea'}
 			/>
 			<button
 				bind:this={addBtnEl}
@@ -166,12 +164,6 @@
 </form>
 
 <style>
-	:global(form.composer.is-private) {
-		position: static;
-		border-top: none;
-		padding: 0.5rem 0 0;
-		background: transparent;
-	}
 	.composer :global(.dot) {
 		width: 22px;
 		height: 22px;

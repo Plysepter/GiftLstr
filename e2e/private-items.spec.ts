@@ -1,205 +1,192 @@
-import { expect, test, type Page } from '@playwright/test';
-import { ALICE, BOB, ADMIN, apiToken, login } from './helpers.js';
+import { expect, test, type APIRequestContext } from '@playwright/test';
+import { ALICE, BOB, CAROL, ADMIN, apiToken, login } from './helpers.js';
 
 const auth = (who: string) => ({ Authorization: `Bearer ${apiToken(who)}` });
 
 let aliceId = 0;
+let bobId = 0;
+let carolId = 0;
 
 test.beforeAll(async ({ request }) => {
-	// Provision users and connect bob to alice so he can view her list.
+	// Provision users and connect bob + carol to alice so they can view her list.
 	await request.get('/api/me', { headers: auth(ALICE) });
 	await request.get('/api/me', { headers: auth(BOB) });
+	await request.get('/api/me', { headers: auth(CAROL) });
 	const admin = await (await request.get('/api/admin/users', { headers: auth(ADMIN) })).json();
 	aliceId = admin.users.find((u) => u.username === 'alice').id;
-	const bobMe = await (await request.get('/api/me', { headers: auth(BOB) })).json();
-	await request.put('/api/connections', {
-		headers: auth(ADMIN),
-		data: { a: bobMe.user.id, b: aliceId, add: true },
-	});
+	bobId = admin.users.find((u) => u.username === 'bob').id;
+	carolId = admin.users.find((u) => u.username === 'carol').id;
+	for (const [a, b] of [[bobId, aliceId], [carolId, aliceId]] as const) {
+		await request.put('/api/connections', {
+			headers: auth(ADMIN),
+			data: { a, b, add: true },
+		});
+	}
 });
 
-/**
- * Adds a private idea via Alice's UI composer (the "Private ideas" section).
- * Returns the unique title used.
- */
-async function addPrivateViaUI(page: Page, title: string): Promise<void> {
-	await login(page, ALICE);
-	await page.goto('/');
-	// The private composer sits in the "Private ideas" section.
-	const privateForm = page.locator('form.composer.is-private');
-	await expect(privateForm).toBeVisible();
-	const input = privateForm.getByLabel('Private gift idea');
-	await input.click();
-	await input.fill(title);
-	await privateForm.getByRole('button', { name: 'Add item' }).click();
-	await expect(page.locator('.card', { hasText: title })).toBeVisible({ timeout: 10000 });
+async function savePrivateIdea(request: APIRequestContext, token: string, ownerId: string, title: string): Promise<string> {
+	const res = await request.post(`/api/users/${ownerId}/private-items`, {
+		headers: auth(token),
+		data: { title, url: '' },
+	});
+	expect(res.ok()).toBeTruthy();
+	return (await res.json()).id;
 }
 
-test.describe('private ideas', () => {
+async function sharePrivateIdea(request: APIRequestContext, token: string, ownerId: string, itemId: string): Promise<void> {
+	const res = await request.put(`/api/users/${ownerId}/private-items/${itemId}/share`, {
+		headers: auth(token),
+	});
+	expect(res.ok()).toBeTruthy();
+}
+
+test.describe('private ideas for someone else\'s list', () => {
 	test.use({ storageState: { cookies: [], origins: [] } });
 
-	test('owner can add a private idea and it does not appear to a connection', async ({ page, request }) => {
-		const title = `E2E Secret ${Date.now()}`;
-		await addPrivateViaUI(page, title);
-
-		// Persists across reload (owner-side).
-		await page.reload();
-		await expect(page.locator('.card', { hasText: title })).toBeVisible();
-
-		// A connected user does not see the private idea (only public / suggested).
+	test('a connected user saves a private idea that only they can see', async ({ page, request }) => {
+		const title = `E2E Private ${Date.now()}`;
 		await login(page, BOB);
 		await page.goto(`/#/list/${aliceId}`);
-		await page.reload();
-		await expect(page.locator('.card', { hasText: title })).toHaveCount(0);
-	});
+		const composer = page.locator('.suggest-bar form.composer');
+		const input = composer.getByLabel('Add private idea');
+		await input.click();
+		await input.fill(title);
+		await composer.getByRole('button', { name: 'Add item' }).click();
 
-	test('owner can hard-delete a private idea after confirming', async ({ page, request }) => {
-		const title = `E2E Secret Del ${Date.now()}`;
-		await addPrivateViaUI(page, title);
+		const privateCard = page.locator('.private-list .card', { hasText: title });
+		await expect(privateCard).toBeVisible({ timeout: 10000 });
+		await expect(page.locator('.private-divider')).toContainText('Only you can see these');
 
-		page.on('dialog', (d) => void d.accept());
-		const card = page.locator('.card', { hasText: title });
-		await card.click();
-		await card.getByRole('button', { name: `Delete private idea ${title}` }).click();
-		const dlg = page.getByRole('dialog', { name: 'Delete private idea?' });
-		await expect(dlg).toBeVisible();
-		await dlg.getByRole('button', { name: 'Delete' }).click();
-		await expect(page.locator('.card', { hasText: title })).toHaveCount(0);
-	});
-
-	test('private items are not exposed via the public list API', async ({ request }) => {
-		const stamp = Date.now();
-		const title = `E2E API Secret ${stamp}`;
-		const res = await request.post('/api/my/private-items', {
-			headers: auth(ALICE),
-			data: { title, url: '' },
-		});
-		expect(res.ok()).toBeTruthy();
-		const privateId = (await res.json()).id;
-
-		const ownerList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(ALICE) })).json();
-		expect(ownerList.privateItems?.some((i) => i.id === privateId)).toBeTruthy();
-		const publicTitles = ownerList.items.map((i) => i.title);
-		expect(publicTitles).not.toContain(title);
-
-		// A connection sees neither the private item nor the privateItems field.
+		// The author sees it under privateItems on the list API.
 		const bobList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(BOB) })).json();
-		expect(bobList.privateItems ?? []).toHaveLength(0);
-		expect(bobList.items.map((i) => i.title)).not.toContain(title);
-	});
-});
+		expect(bobList.privateItems.map((i: { title: string }) => i.title)).toContain(title);
+		expect(bobList.items.map((i: { title: string }) => i.title)).not.toContain(title);
 
-test.describe('share-to-suggested flow', () => {
-	test.use({ storageState: { cookies: [], origins: [] } });
-
-	test('owner shares a private idea, converting it to a suggestion visible to a connection', async ({ page, request }) => {
-		const title = `E2E Shared ${Date.now()}`;
-		await addPrivateViaUI(page, title);
-
-		// Owner clicks Share on the private idea and confirms the dialog.
-		const card = page.locator('.card', { hasText: title });
-		await card.click();
-		await card.getByRole('button', { name: `Share ${title}` }).click();
-		const dlg = page.getByRole('dialog', { name: 'Share this idea?' });
-		await expect(dlg).toBeVisible();
-		await dlg.getByRole('button', { name: 'Share' }).click();
-
-		// The idea moves into the "Suggested" section for the owner.
-		const suggestedSection = page.locator('ul.suggested-list').first();
-		await expect(suggestedSection.locator('.card', { hasText: title })).toBeVisible({ timeout: 10000 });
-
-		// The connection can now see it as "Suggested by Alice".
-		await login(page, BOB);
-		await page.goto(`/#/list/${aliceId}`);
-		await page.reload();
-		const bobCard = page.locator('.card', { hasText: title });
-		await expect(bobCard).toBeVisible();
-		await expect(bobCard.getByText(/Suggested by/)).toBeVisible();
-	});
-
-	test('owner can unshare (remove) a suggested item after confirming', async ({ page, request }) => {
-		const title = `E2E Unshare ${Date.now()}`;
-		// Seed a shared suggestion via the API.
-		const privateRes = await request.post('/api/my/private-items', {
-			headers: auth(ALICE),
-			data: { title, url: '' },
-		});
-		const privateId = (await privateRes.json()).id;
-		await request.put(`/api/my/private-items/${privateId}/share`, { headers: auth(ALICE) });
+		// The owner never sees it on their list or My List.
+		const aliceList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(ALICE) })).json();
+		expect(aliceList.items.map((i: { title: string }) => i.title)).not.toContain(title);
+		expect(aliceList.privateItems ?? []).toHaveLength(0);
 
 		await login(page, ALICE);
 		await page.goto('/');
-		const suggestedCard = page.locator('.card', { hasText: title });
-		await expect(suggestedCard).toBeVisible();
+		await page.reload();
+		await expect(page.getByText(title)).toHaveCount(0);
+	});
 
-		page.on('dialog', (d) => void d.accept());
-		await suggestedCard.click();
-		await suggestedCard.getByRole('button', { name: `Unshare ${title}` }).click();
+	test('a private idea can be marked claimed and then unclaimed', async ({ page, request }) => {
+		const title = `E2E Private Claim ${Date.now()}`;
+		await savePrivateIdea(request, BOB, aliceId, title);
+		await login(page, BOB);
+		await page.goto(`/#/list/${aliceId}`);
+		const privateCard = page.locator('.private-list .card', { hasText: title });
+		await expect(privateCard).toBeVisible({ timeout: 10000 });
+
+		await privateCard.getByRole('button', { name: 'Claim', exact: true }).click();
+		await expect(privateCard.getByRole('button', { name: 'Unclaim', exact: true })).toBeVisible();
+		await expect(privateCard.getByText('your pick')).toBeVisible();
+
+		await privateCard.getByRole('button', { name: 'Unclaim', exact: true }).click();
+		await expect(privateCard.getByRole('button', { name: 'Claim', exact: true })).toBeVisible();
+	});
+
+	test('sharing publishes an idea to the list and leaves the private section', async ({ page, request }) => {
+		const title = `E2E Share ${Date.now()}`;
+		await login(page, BOB);
+		await page.goto(`/#/list/${aliceId}`);
+		const composer = page.locator('.suggest-bar form.composer');
+		await composer.getByLabel('Add private idea').fill(title);
+		await composer.getByRole('button', { name: 'Add item' }).click();
+
+		const privateCard = page.locator('.private-list .card', { hasText: title });
+		await expect(privateCard).toBeVisible({ timeout: 10000 });
+		await privateCard.click();
+		await privateCard.getByRole('button', { name: `Share ${title}` }).click();
+
+		const dlg = page.getByRole('dialog', { name: 'Share this idea?' });
+		await expect(dlg).toBeVisible();
+		await expect(dlg).toContainText('Suggested by you');
+		await dlg.getByRole('button', { name: 'Share' }).click();
+
+		await expect(page.locator('.private-list .card', { hasText: title })).toHaveCount(0);
+		const suggestedCard = page.locator('.suggested-list .card', { hasText: title });
+		await expect(suggestedCard).toBeVisible({ timeout: 10000 });
+		await expect(suggestedCard.getByText(`Suggested by ${BOB.split(':')[1]}`)).toBeVisible();
+
+		// The owner still never sees the shared idea on their My List.
+		await login(page, ALICE);
+		await page.goto('/');
+		await page.reload();
+		await expect(page.getByText(title)).toHaveCount(0);
+	});
+
+	test('a connection can claim a shared suggestion', async ({ page, request }) => {
+		const title = `E2E Shared Claim ${Date.now()}`;
+		const id = await savePrivateIdea(request, BOB, aliceId, title);
+		await sharePrivateIdea(request, BOB, aliceId, id);
+
+		await login(page, CAROL);
+		await page.goto(`/#/list/${aliceId}`);
+		const card = page.locator('.suggested-list .card', { hasText: title });
+		await expect(card).toBeVisible({ timeout: 10000 });
+		await card.getByRole('button', { name: 'Claim', exact: true }).click();
+		await expect(card.getByRole('button', { name: 'Unclaim' })).toBeVisible();
+	});
+
+	test('the author can retract a shared suggestion they no longer want', async ({ page, request }) => {
+		const title = `E2E Retract ${Date.now()}`;
+		const id = await savePrivateIdea(request, BOB, aliceId, title);
+		await sharePrivateIdea(request, BOB, aliceId, id);
+
+		await login(page, BOB);
+		await page.goto(`/#/list/${aliceId}`);
+		const card = page.locator('.suggested-list .card', { hasText: title });
+		await expect(card).toBeVisible({ timeout: 10000 });
+		await card.click();
+		await card.getByRole('button', { name: `Unshare ${title}` }).click();
 		const dlg = page.getByRole('dialog', { name: 'Unshare this idea?' });
 		await expect(dlg).toBeVisible();
 		await dlg.getByRole('button', { name: 'Unshare' }).click();
 		await expect(page.locator('.card', { hasText: title })).toHaveCount(0);
 	});
 
-	test('a connection can claim a suggested item', async ({ page, request }) => {
-		const title = `E2E Claim Suggestion ${Date.now()}`;
-		const privateRes = await request.post('/api/my/private-items', {
-			headers: auth(ALICE),
-			data: { title, url: '' },
-		});
-		const privateId = (await privateRes.json()).id;
-		await request.put(`/api/my/private-items/${privateId}/share`, { headers: auth(ALICE) });
-
-		await login(page, BOB);
-		await page.goto(`/#/list/${aliceId}`);
-		const card = page.locator('.card', { hasText: title });
-		await expect(card).toBeVisible();
-		await card.getByRole('button', { name: 'Claim', exact: true }).click();
-		await expect(card.getByRole('button', { name: 'Unclaim' })).toBeVisible();
-	});
-});
-
-test.describe('suggesting on another user list', () => {
-	test.use({ storageState: { cookies: [], origins: [] } });
-
-	test('a connected user can suggest an idea to the owner via the UI', async ({ page, request }) => {
-		const title = `E2E Suggested By Bob ${Date.now()}`;
-		await login(page, BOB);
-		await page.goto(`/#/list/${aliceId}`);
-		const composer = page.locator('form.composer');
-		const input = composer.getByLabel('Suggest gift idea');
-		await input.click();
-		await input.fill(title);
-		await composer.getByRole('button', { name: 'Add item' }).click();
-
-		// Bob sees it with a "Suggested by" badge on the owner's list.
-		const card = page.locator('.card', { hasText: title });
-		await expect(card).toBeVisible({ timeout: 10000 });
-		await expect(card.getByText(/Suggested by Bob/)).toBeVisible();
-
-		// The owner sees it in their Suggested section.
-		await login(page, ALICE);
-		await page.goto('/');
-		await page.reload();
-		const suggestedSection = page.locator('ul.suggested-list').first();
-		await expect(suggestedSection.locator('.card', { hasText: title })).toBeVisible({ timeout: 10000 });
-	});
-
-	test("an unconnected user's suggestion is rejected with 403", async ({ request }) => {
+	test('an unconnected user cannot save a private idea', async ({ request }) => {
 		await request.get('/api/me', { headers: auth('eve:Eve Elderberry') });
-		const res = await request.post(`/api/users/${aliceId}/suggestions`, {
+		const res = await request.post(`/api/users/${aliceId}/private-items`, {
 			headers: auth('eve:Eve Elderberry'),
 			data: { title: 'Sneaky', url: '' },
 		});
 		expect(res.status()).toBe(403);
 	});
 
-	test('the owner cannot suggest to themselves (400)', async ({ request }) => {
-		const me = await (await request.get('/api/me', { headers: auth(ALICE) })).json();
-		const res = await request.post(`/api/users/${me.user.id}/suggestions`, {
+	test('the owner cannot save a private idea for themselves', async ({ request }) => {
+		const res = await request.post(`/api/users/${aliceId}/private-items`, {
 			headers: auth(ALICE),
 			data: { title: 'For me', url: '' },
 		});
 		expect(res.status()).toBe(400);
+	});
+});
+
+test.describe('private ideas API', () => {
+	test.use({ storageState: { cookies: [], origins: [] } });
+
+	test('private ideas are not exposed via the public list API', async ({ request }) => {
+		const title = `E2E API Secret ${Date.now()}`;
+		const id = await savePrivateIdea(request, BOB, aliceId, title);
+
+		// The author sees it only in privateItems.
+		const bobList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(BOB) })).json();
+		expect(bobList.privateItems.some((i: { id: string }) => i.id === id)).toBeTruthy();
+		expect(bobList.items.map((i: { title: string }) => i.title)).not.toContain(title);
+
+		// The owner sees neither the private item nor the privateItems field.
+		const ownerList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(ALICE) })).json();
+		expect(ownerList.privateItems ?? []).toHaveLength(0);
+		expect(ownerList.items.map((i: { title: string }) => i.title)).not.toContain(title);
+
+		// Another connection sees neither.
+		const carolList = await (await request.get(`/api/users/${aliceId}/list`, { headers: auth(CAROL) })).json();
+		expect(carolList.privateItems ?? []).toHaveLength(0);
+		expect(carolList.items.map((i: { title: string }) => i.title)).not.toContain(title);
 	});
 });
