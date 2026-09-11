@@ -53,13 +53,13 @@
 	let showBirthModal = $derived($user?.isNew === true);
 
 	const birthHolidayOptions = [
-		{ v: '', l: 'None — just birthday & Christmas' },
+		{ v: '', l: 'Off' },
 		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
 		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
 	];
 
 	const bdayMonths = [
-		{ v: '', l: 'Month' },
+		{ v: '', l: '' },
 		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
 		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
 		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
@@ -376,7 +376,7 @@
 	<EmptyState
 		icon="gift"
 		title="No gift ideas yet"
-		hint="Type an idea or paste a link below — your wishlist starts here."
+		hint="Type an idea or paste a link below. Your wishlist starts here."
 		ready={!loading && !error && !network.offline && isEmpty}
 	/>
 
@@ -441,7 +441,7 @@
 			aria-pressed={showRemoved}
 			onclick={() => (showRemoved = !showRemoved)}
 		>
-			<Icon name="eye" size={14} /> {removedItems.length} removed — {showRemoved ? 'hide' : 'show'}
+			<Icon name="eye" size={14} /> {removedItems.length} removed · {showRemoved ? 'hide' : 'show'}
 		</button>
 	</div>
 
@@ -520,19 +520,21 @@
 					<h2>What’s your birthday?</h2>
 				</div>
 				<p class="muted">
-					Your list automatically archives around your birthday (and Christmas), carrying unclaimed
-					items over to a fresh list. This step is optional — you can always set it later in your profile.
+					Your list archives around your birthday and Christmas, carrying unclaimed
+					items over to a fresh list. You can add Mother's or Father's Day as a
+					third reset date below. This step is optional; you can always set it
+					later in your profile.
 				</p>
 				<div class="bday-selects">
 					<select class="birth-select" bind:value={birthMonth} aria-label="Birth month">
 						{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
 					</select>
 					<select class="birth-select" bind:value={birthDay} aria-label="Birth day">
-						<option value="">Day</option>
+						<option value=""></option>
 						{#each bdayDays as d}<option value={d}>{d}</option>{/each}
 					</select>
 				</div>
-				<label class="birth-holiday" for="birthHolidaySelect">Also archive around</label>
+				<label class="birth-holiday" for="birthHolidaySelect">Celebrate Mothers or Fathers Day</label>
 				<select class="birth-select" id="birthHolidaySelect" bind:value={birthHoliday} aria-label="Additional reset holiday">
 					{#each birthHolidayOptions as o}<option value={o.v}>{o.l}</option>{/each}
 				</select>

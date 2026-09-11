@@ -580,13 +580,13 @@ func lastResetDate(u *user, kind string, now time.Time) (time.Time, bool) {
 func resetLabel(kind string, reset time.Time) string {
 	switch kind {
 	case resetChristmas:
-		return fmt.Sprintf("Christmas %d", reset.Year())
+		return fmt.Sprintf("%d Christmas", reset.Year())
 	case resetMothers:
-		return fmt.Sprintf("Mother's Day %d", reset.Year())
+		return fmt.Sprintf("%d Mother's Day", reset.Year())
 	case resetFathers:
-		return fmt.Sprintf("Father's Day %d", reset.Year())
+		return fmt.Sprintf("%d Father's Day", reset.Year())
 	default:
-		return fmt.Sprintf("Birthday %d", reset.Year())
+		return fmt.Sprintf("%d Birthday", reset.Year())
 	}
 }
 

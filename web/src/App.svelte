@@ -43,6 +43,11 @@
 		const vv = window.visualViewport;
 		if (!vv) return;
 		const upd = (): void => {
+			// During iOS rubber-band overscroll the visual viewport is panned
+			// beyond the layout viewport; ignore those transient offsets or the
+			// docked composer would jump off the tab bar. Only the keyboard
+			// remains inside the layout viewport, so this still tracks it.
+			if (vv.offsetTop < 0 || vv.offsetTop + vv.height > window.innerHeight) return;
 			const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
 			document.documentElement.style.setProperty('--kb', kb + 'px');
 			document.documentElement.classList.toggle('kb', kb > 80);

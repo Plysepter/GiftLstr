@@ -227,7 +227,7 @@
 	function deleteUser(u: AdminUser): void {
 		confirmState = {
 			title: 'Delete user?',
-			message: `Permanently delete ${u.displayName} (@${u.username}) and ALL their data — lists, items, claims and connections. This cannot be undone. Type the username to confirm.`,
+			message: `Permanently delete ${u.displayName} (@${u.username}) and ALL their data, including lists, items, claims and connections. This cannot be undone. Type the username to confirm.`,
 			confirmLabel: 'Delete user',
 			danger: true,
 			confirmText: u.username,
@@ -314,7 +314,7 @@
 	let me = $derived($user);
 
 	const bdayMonths = [
-		{ v: '', l: 'Month' },
+		{ v: '', l: '' },
 		{ v: '01', l: 'Jan' }, { v: '02', l: 'Feb' }, { v: '03', l: 'Mar' },
 		{ v: '04', l: 'Apr' }, { v: '05', l: 'May' }, { v: '06', l: 'Jun' },
 		{ v: '07', l: 'Jul' }, { v: '08', l: 'Aug' }, { v: '09', l: 'Sep' },
@@ -468,7 +468,7 @@
 								{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
 							</select>
 							<select class="bday-select" bind:value={editBirthDay} aria-label="Birthday day for {u.displayName}" onfocus={() => startEditBday(u)}>
-								<option value="">Day</option>
+								<option value=""></option>
 								{#each bdayDays as d}<option value={d}>{d}</option>{/each}
 							</select>
 						</div>
@@ -504,7 +504,7 @@
 		{#if modalUser}
 			<form class="dlg-card" method="dialog" onsubmit={(e) => e.preventDefault()}>
 				<div class="dlg-head">
-					<h2>{modalUser.displayName} — {allConnections(modalUser).length} connections</h2>
+					<h2>{modalUser.displayName} · {allConnections(modalUser).length} connections</h2>
 					<button class="dlg-close" type="button" onclick={closeModal} aria-label="Close">
 						<Icon name="x" size={14} />
 					</button>

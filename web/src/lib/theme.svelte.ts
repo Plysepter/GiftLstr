@@ -108,7 +108,7 @@ function loadPrefs(): {
       style: ALL_STYLES.includes(style as ThemeStyle) ? (style as ThemeStyle) : "aurora",
       events: events !== "0",
       useOwnerTheme: useOwnerTheme !== "0",
-      contrast: contrast !== "0",
+      contrast: contrast === "1",
     };
   } catch {
     return { style: "aurora", events: true, useOwnerTheme: true, contrast: false };

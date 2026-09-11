@@ -119,10 +119,10 @@ func TestNthSundayOf(t *testing.T) {
 		nth   int
 		want  string
 	}{
-		{2026, time.May, 1, "2026-05-03"}, // 2026-05-01 is a Friday
-		{2026, time.May, 2, "2026-05-10"}, // Mother's Day 2026
-		{2027, time.May, 2, "2027-05-09"}, // Mother's Day 2027
-		{2025, time.May, 2, "2025-05-11"}, // Mother's Day 2025
+		{2026, time.May, 1, "2026-05-03"},  // 2026-05-01 is a Friday
+		{2026, time.May, 2, "2026-05-10"},  // Mother's Day 2026
+		{2027, time.May, 2, "2027-05-09"},  // Mother's Day 2027
+		{2025, time.May, 2, "2025-05-11"},  // Mother's Day 2025
 		{2026, time.June, 3, "2026-06-21"}, // Father's Day 2026
 		{2025, time.June, 3, "2025-06-15"}, // Father's Day 2025
 	}
@@ -183,8 +183,8 @@ func TestArchiveUserListArchivesAndCarriesOver(t *testing.T) {
 	if err := db.QueryRow(`SELECT label, archived_at FROM lists WHERE id = ?`, listID).Scan(&label, &archivedAt); err != nil {
 		t.Fatal(err)
 	}
-	if label != "Birthday 2026" {
-		t.Errorf("label = %q, want Birthday 2026", label)
+	if label != "2026 Birthday" {
+		t.Errorf("label = %q, want 2026 Birthday", label)
 	}
 	if archivedAt == nil {
 		t.Error("list should be archived")
@@ -311,8 +311,8 @@ func TestArchiveUserListHoliday(t *testing.T) {
 		if err := db.QueryRow(`SELECT label FROM lists WHERE id = ?`, listID).Scan(&label); err != nil {
 			t.Fatal(err)
 		}
-		if label != "Mother's Day 2026" {
-			t.Errorf("label = %q, want Mother's Day 2026", label)
+		if label != "2026 Mother's Day" {
+			t.Errorf("label = %q, want 2026 Mother's Day", label)
 		}
 		current, _ := activeListID(u.ID)
 		if current == listID {
@@ -367,8 +367,8 @@ func TestArchiveUserListWithNoBirthday(t *testing.T) {
 	if err := db.QueryRow(`SELECT label FROM lists WHERE id = ?`, listID).Scan(&label); err != nil {
 		t.Fatal(err)
 	}
-	if label != "Christmas 2025" {
-		t.Errorf("label = %q, want Christmas 2025", label)
+	if label != "2025 Christmas" {
+		t.Errorf("label = %q, want 2025 Christmas", label)
 	}
 }
 

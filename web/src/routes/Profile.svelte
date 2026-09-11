@@ -38,16 +38,22 @@
 		{ value: 'dark', label: 'Dark' }
 	];
 
-	let birthday = $state('');
 	let birthMonth = $state('');
 	let birthDay = $state('');
 	let birthState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
+	let birthSeeded = false;
+
+	const savedBirthday = $derived($user?.birthday ?? '');
+	const birthDirty = $derived(
+		(birthMonth === '' && birthDay === '' ? '' : `${birthMonth}-${birthDay.padStart(2, '0')}`) !==
+			savedBirthday
+	);
 
 	let holiday = $state('');
 	let holidayState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
 
 	const holidayOptions = [
-		{ v: '', l: 'None — just birthday & Christmas' },
+		{ v: '', l: 'Off' },
 		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
 		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
 	];
@@ -77,7 +83,7 @@
 	}
 
 	const bdayMonths = [
-		{ v: '', l: 'Month' },
+		{ v: '', l: '' },
 		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
 		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
 		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
@@ -85,18 +91,17 @@
 	];
 	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
 
+	// Seed the selects from the profile once. Do not re-derive on every
+	// $user change: an in-progress edit (or the save itself) would otherwise
+	// be clobbered back to the stored value mid-flight.
 	$effect(() => {
 		const u = $user;
-		if (u) {
-			birthday = u.birthday;
-			const parts = birthday.split('-');
-			if (parts.length === 2 && parts[0] && parts[1]) {
-				birthMonth = parts[0];
-				birthDay = String(parseInt(parts[1], 10));
-			} else {
-				birthMonth = '';
-				birthDay = '';
-			}
+		if (!u || birthSeeded) return;
+		birthSeeded = true;
+		const parts = (u.birthday ?? '').split('-');
+		if (parts.length === 2 && parts[0] && parts[1]) {
+			birthMonth = parts[0];
+			birthDay = String(parseInt(parts[1], 10));
 		}
 	});
 
@@ -104,11 +109,11 @@
 		e.preventDefault();
 		if (birthState === 'saving') return;
 		if (!birthMonth || !birthDay) return;
+		const value = `${birthMonth}-${birthDay.padStart(2, '0')}`;
 		birthState = 'saving';
-		birthday = `${birthMonth}-${birthDay.padStart(2, '0')}`;
 		try {
-			await api('/api/profile', { method: 'PATCH', body: { birthday } });
-			user.update((u) => (u ? { ...u, birthday } : u));
+			await api('/api/profile', { method: 'PATCH', body: { birthday: value } });
+			user.update((u) => (u ? { ...u, birthday: value } : u));
 			birthState = 'done';
 			setTimeout(() => (birthState = 'idle'), 1500);
 		} catch {
@@ -122,7 +127,6 @@
 		birthState = 'saving';
 		try {
 			await api('/api/profile', { method: 'PATCH', body: { birthday: '01-01' } });
-			birthday = '';
 			birthMonth = '';
 			birthDay = '';
 			user.update((u) => (u ? { ...u, birthday: '' } : u));
@@ -297,8 +301,8 @@
 				onchange={(e) => void toggleSuggestions(e)}
 			/>
 			<span>
-				<b>Suggest ideas on friends’ lists</b>
-				<span class="hint">Shows a “suggest an idea” composer when you’re viewing someone else’s list. Turn off to keep their lists claim-only.</span>
+				<b>Enable private ideas lists</b>
+				<span class="hint">Keep a private list of gift ideas for each person below their own wish list! Ideas shared by other users are always shown.</span>
 			</span>
 		</label>
 	</div>
@@ -312,34 +316,35 @@
 					{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
 				</select>
 				<select class="bday-select" bind:value={birthDay} aria-label="Birth day">
-					<option value="">Day</option>
+					<option value=""></option>
 					{#each bdayDays as d}<option value={d}>{d}</option>{/each}
 				</select>
 			</div>
 			<div class="bday-btns">
-				<button
-					class="bday-btn"
-					class:done={birthState === 'done'}
-					class:err={birthState === 'error'}
-					type="submit"
-					disabled={birthState === 'saving' || !birthMonth || !birthDay}
-					aria-label="Save birthday"
-				>
-					{#if birthState === 'done'}
-						<Icon name="check" size={18} strokeWidth={3} />
-					{:else if birthState === 'error'}
-						<Icon name="x" size={18} strokeWidth={3} />
-					{:else}
-						Save
-					{/if}
-				</button>
-				{#if birthday}
+				{#if birthState === 'idle' && !birthDirty && savedBirthday}
 					<button class="secondary bday-btn" type="button" onclick={() => void clearBirthday()}>Clear</button>
+				{:else}
+					<button
+						class="bday-btn"
+						class:done={birthState === 'done'}
+						class:err={birthState === 'error'}
+						type="submit"
+						disabled={birthState === 'saving' || !birthMonth || !birthDay}
+						aria-label="Save birthday"
+					>
+						{#if birthState === 'done'}
+							<Icon name="check" size={18} strokeWidth={3} />
+						{:else if birthState === 'error'}
+							<Icon name="x" size={18} strokeWidth={3} />
+						{:else}
+							Save
+						{/if}
+					</button>
 				{/if}
 			</div>
 		</div>
 		<div class="holiday-row">
-			<label for="holidaySelect">Also archive around</label>
+			<label for="holidaySelect">Celebrate Mothers or Fathers Day</label>
 			<select
 				class="bday-select"
 				id="holidaySelect"
@@ -353,7 +358,7 @@
 			<span class="holiday-status" class:done={holidayState === 'done'} class:err={holidayState === 'error'}>
 				{#if holidayState === 'done'}Saved
 				{:else if holidayState === 'error'}Couldn’t save
-				{:else}Choose if you’d rather reset around Mother’s or Father’s Day instead of your birthday.
+				{:else}Adds a third reset date on top of your birthday and Christmas. Your list is archived around all three.
 				{/if}
 			</span>
 		</div>
@@ -393,6 +398,8 @@
 	.hint { font-size: 0.72rem; color: var(--muted); }
 	.event-row { display: flex; align-items: flex-start; gap: 0.65rem; margin-top: 1.1rem; cursor: pointer; }
 	.event-row input { width: 20px; height: 20px; accent-color: var(--acc); margin-top: 0.15rem; }
+	.event-row > span b { display: block; }
+	.event-row .hint { display: block; margin-top: 0.2rem; line-height: 1.45; }
 	.share-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 1rem; }
 	.share-code {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

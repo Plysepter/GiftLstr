@@ -1503,9 +1503,14 @@ nav.tabbar a.active span.lbl {
   width: 36vmax;
   height: 36vmax;
   left: 28%;
-  bottom: -14%;
+  bottom: 5%;
   background: var(--b3, #0891b2);
   animation: blobC 42s ease-in-out infinite alternate;
+  transition: bottom 2s ease;
+
+  @media (min-width: 481px) {
+      bottom: -5%;
+  }
 }
 @keyframes blobA {
   to {

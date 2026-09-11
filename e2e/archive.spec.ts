@@ -58,7 +58,7 @@ test.describe('archive / reset flow', () => {
 		// Archive index shows the new entry.
 		await login(page, ALICE);
 		await page.goto('/#/archive');
-		const row = page.locator('.card', { hasText: `Birthday ${year}` });
+		const row = page.locator('.card', { hasText: `${year} Birthday` });
 		await expect(row).toBeVisible();
 
 		// Detail view is read-only and shows who claimed what.

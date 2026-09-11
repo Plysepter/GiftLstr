@@ -177,6 +177,33 @@ describe("Birthday", () => {
     expect(btn.classList.contains("err")).toBe(true);
     expect(btn.classList.contains("done")).toBe(false);
   });
+
+  it("keeps the chosen month/day and pushes the new value while saving (no select reset)", async () => {
+    let resolveApi!: (v: unknown) => void;
+    mocks.api.mockImplementation(
+      () =>
+        new Promise((res) => {
+          resolveApi = res;
+        }),
+    );
+    const { container } = render(Profile);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Birth month"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("Birth day"), { target: { value: "15" } });
+    fireEvent.submit(container.querySelector("form.card") as HTMLFormElement);
+    await flush();
+
+    const month = container.querySelector("select[aria-label='Birth month']") as HTMLSelectElement;
+    const day = container.querySelector("select[aria-label='Birth day']") as HTMLSelectElement;
+    expect(month.value).toBe("12");
+    expect(day.value).toBe("15");
+
+    resolveApi({});
+    await flush();
+    expect(month.value).toBe("12");
+    expect(day.value).toBe("15");
+    expect(((mocks.userStore as { value: unknown }).value as User | null)?.birthday).toBe("12-15");
+  });
 });
 
 describe("Appearance", () => {

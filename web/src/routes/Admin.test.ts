@@ -348,7 +348,7 @@ describe("Admin connections modal", () => {
 
     const dlg = openDialog(container) as HTMLDialogElement;
     expect(dlg.open).toBe(true);
-    expect(within(dlg).getByText("Alice Apple — 1 connections")).toBeTruthy();
+    expect(within(dlg).getByText("Alice Apple · 1 connections")).toBeTruthy();
     expect(within(dlg).getByText("Bob Banana")).toBeTruthy();
 
     // Search lives inside the modal; typing queries the admin users API.
