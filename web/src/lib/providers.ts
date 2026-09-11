@@ -36,6 +36,8 @@ export interface FeAuthProvider {
 interface AuthConfig {
   authIssuer?: string;
   authClientId?: string;
+  /** Served true in e2e/demo mode; the Login page shows seeded demo accounts. */
+  authE2e?: boolean;
 }
 
 const runtimeConfig = (globalThis as { __GIFTLSTR__?: AuthConfig }).__GIFTLSTR__ ?? {};
@@ -43,6 +45,9 @@ const issuer =
   runtimeConfig.authIssuer || (import.meta.env.VITE_AUTHENTIK_ISSUER as string | undefined);
 const clientId =
   runtimeConfig.authClientId || (import.meta.env.VITE_AUTHENTIK_CLIENT_ID as string | undefined);
+
+/** True when the backend is running in E2E/demo mode (auth disabled). */
+export const authE2e = runtimeConfig.authE2e === true;
 
 interface OIDCDiscovery {
   issuer: string;
@@ -344,7 +349,11 @@ export const e2eProvider = (token: string): FeAuthProvider => ({
   openSignIn(): void {
     // no-op in test mode
   },
-  async signOut(): Promise<void> {},
+  async signOut(): Promise<void> {
+    // Clear the demo/e2e session token so a later reload returns to the Login
+    // page (where the demo picker can sign back in).
+    globalThis.localStorage?.removeItem("e2e_token");
+  },
 });
 
 /** Picks the provider for this environment based on the presence of an e2e token. */

@@ -126,6 +126,36 @@ pnpm --dir web fmt:check
 pnpm e2e
 ```
 
+## Demo mode (no Authentik)
+
+`docker/giftlstr/docker-compose.demo.yml` runs the app without any identity
+provider, useful for evaluating GiftLstr quickly:
+
+```sh
+docker compose -f docker/giftlstr/docker-compose.demo.yml up --build
+```
+
+It starts with `E2E_TEST_MODE=1`, so:
+
+- **No Authentik required.** Auth is replaced by the same bearer-token scheme
+  the Playwright suite uses. On the login page, pick a seeded account under
+  "Demo accounts" to sign in instantly (or send
+  `Authorization: Bearer e2e:alice:Alice Apple` directly).
+- **A canonical seeded dataset.** Every boot wipes the database and applies
+  `server/seed.sql` (the exact dataset the e2e suite asserts against), so each
+  run starts from identical data. Additional users (`neww:Wren Newguy`,
+  `dave:Dave Durian`, `eve:Eve Elderberry`) are created lazily by the e2e suite
+  and are *not* part of the seed.
+- **Nothing persists.** `PORT` (default `8080`) peers the container port;
+  data lives on a `tmpfs` mount, so a restart resets to the seed. Never put
+  this mode in front of real traffic or real data.
+
+Seeded accounts include `admin:Ada Root` (admin), `alice:Alice Apple` (the
+main demo user, connected to `bob`, `carol`, `dana`, `eric`, `faye` and
+`george`), plus `helen:Helen Honeydew` and `ivan:Ivan Kiwi`, who are *not*
+connected to alice — handy for seeing the "no access" behavior. Bulk
+`mock01..mock30` accounts exist to exercise list pagination.
+
 ## Configuration
 
 | Variable                  | Purpose                                                                 |

@@ -94,6 +94,13 @@ func main() {
 	} {
 		db.Exec(m) // ignore "duplicate column" errors
 	}
+	// E2E / demo mode starts from the canonical seeded dataset on every boot so
+	// the Playwright suite and the docker demo always see identical data.
+	if e2eTestMode() {
+		if err := applySeed(db); err != nil {
+			log.Fatalf("apply e2e seed: %v", err)
+		}
+	}
 	go archiveLoop()
 	go backupLoop(context.Background(), backupConfigFromEnv(dataDir))
 
@@ -201,7 +208,13 @@ func escapeJS(s string) string {
 // authConfigScript returns the inline script that defines the runtime OIDC
 // config for the SPA.
 func authConfigScript(issuer, clientID string) string {
-	return `<script>window.__GIFTLSTR__ = { authIssuer: "` + escapeJS(issuer) + `", authClientId: "` + escapeJS(clientID) + `" };</script>`
+	authE2e := ""
+	if e2eTestMode() {
+		// Expose e2e mode to the signed-out Login page so it can offer the
+		// seeded demo accounts as one-click sign-in.
+		authE2e = `, authE2e: true`
+	}
+	return `<script>window.__GIFTLSTR__ = { authIssuer: "` + escapeJS(issuer) + `", authClientId: "` + escapeJS(clientID) + `"` + authE2e + ` };</script>`
 }
 
 // inlineScriptRe matches a plain (attribute-free) inline script block; these

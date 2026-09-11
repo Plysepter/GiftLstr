@@ -86,7 +86,39 @@ func registerAPI(mux *http.ServeMux) {
 
 	if e2eTestMode() {
 		mux.HandleFunc("POST /api/e2e/archive", rl.rateLimit(auth(handleE2EArchive)))
+		// Not auth-protected: the demo account picker renders on the signed-out
+		// Login page. Only ever registered alongside E2E_TEST_MODE.
+		mux.HandleFunc("GET /api/e2e/demo-users", rl.rateLimit(handleDemoUsers))
 	}
+}
+
+// handleDemoUsers lists the curated demo accounts offered on the login page in
+// e2e mode: admins plus anyone connected to another user. That excludes the
+// bulk mockNN accounts, which exist only to exercise pagination. Only
+// available when E2E_TEST_MODE=1.
+func handleDemoUsers(w http.ResponseWriter, r *http.Request) {
+	type demoUser struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"displayName"`
+		IsAdmin     bool   `json:"isAdmin"`
+	}
+	rows, err := db.Query(`SELECT username, display_name, is_admin FROM users
+		WHERE is_admin = 1 OR EXISTS(SELECT 1 FROM connections c WHERE c.user_id = users.id OR c.other_user_id = users.id)
+		ORDER BY display_name`)
+	if err != nil {
+		logExec("demo users", err)
+		fail(w, 500, "query error")
+		return
+	}
+	defer rows.Close()
+	users := []demoUser{}
+	for rows.Next() {
+		var u demoUser
+		if rows.Scan(&u.Username, &u.DisplayName, &u.IsAdmin) == nil {
+			users = append(users, u)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"users": users})
 }
 
 func e2eTestMode() bool {

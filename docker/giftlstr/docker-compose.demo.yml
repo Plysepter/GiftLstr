@@ -1,0 +1,31 @@
+# GiftLstr demo build: no Authentik, e2e bearer-token mode, seeded dataset.
+#
+#   docker compose -f docker/giftlstr/docker-compose.demo.yml up --build
+#
+# The server boots in the same E2E_TEST_MODE the Playwright suite uses: it wipes
+# the database and applies the canonical demo seed (server/seed.sql) on startup,
+# then accepts "e2e:<username>:<display name>" bearer tokens. Data lives on an
+# in-memory tmpfs mount, so every container spin-up starts from the exact same
+# seeded state — nothing is persisted between runs.
+#
+# On the Login page, pick a seeded account from the "Demo accounts" list (or
+# paste a token as Authorization: Bearer e2e:alice:Alice Apple) to jump in.
+# Do not combine this with AUTHENTIK_ISSUER: the server refuses to start.
+
+services:
+  giftlstr:
+    image: giftlstr-giftlstr-demo:latest
+    build:
+      context: ../..
+    entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
+    ports:
+      # PORT sets both the container's internal listen port and the published
+      # host port (default 8080).
+      - "${PORT:-8080}:${PORT:-8080}"
+    environment:
+      - DATA_DIR=/data
+      - PORT=${PORT:-8080}
+      - E2E_TEST_MODE=1
+    tmpfs:
+      - /data:mode=1777
+    restart: "no"
