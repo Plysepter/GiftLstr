@@ -7,7 +7,11 @@ COPY web/ .
 RUN pnpm run build
 
 # --- backend build ---
-FROM golang:1.26-alpine AS server
+# go1.26's compiler crashes on the generated modernc.org/sqlite source and on
+# large go:embed data (flaky "internal compiler error" panics). Also do NOT use
+# the floating 1.27 tag: go1.27.1's compiler segfaults/ICEs on some hosts while
+# compiling stdlib itself (types2.selector / internal/runtime/atomic). Pin 1.27.0.
+FROM golang:1.27.0-alpine AS server
 WORKDIR /src
 COPY server/go.mod server/go.sum ./
 RUN go mod download

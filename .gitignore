@@ -12,6 +12,7 @@ web/.env.local
 server/server
 giftlstr-rebuilt
 giftlstr.tar
+giftlstr-*.tar
 
 # Built frontend assets embedded by the Go server (regenerated at build time
 # from web/dist/ by scripts/e2e-server.sh and the Dockerfile).
