@@ -2,7 +2,17 @@
 FROM node:22-alpine AS web
 WORKDIR /src
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+# pnpm's install occasionally SIGSEGVs (exit 139) while spawning its link worker
+# threads under constrained/kernel-specific conditions. It is transient and a
+# retry completes cleanly, so bound the step to up to 3 attempts.
+RUN corepack enable && \
+    i=0; \
+    until pnpm install --frozen-lockfile; do \
+      i=$((i+1)); \
+      echo "pnpm install attempt $i failed; retrying in 2s"; \
+      if [ "$i" -ge 3 ]; then echo "pnpm install failed after 3 attempts"; exit 1; fi; \
+      sleep 2; \
+    done
 COPY web/ .
 RUN pnpm run build
 
