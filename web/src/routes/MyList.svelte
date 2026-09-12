@@ -44,50 +44,6 @@
 	// private / suggested confirmations
 	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
 
-	// ---------- first-run birthday prompt ----------
-	let birthModalEl: HTMLDialogElement | undefined = $state();
-	let birthMonth = $state('');
-	let birthDay = $state('');
-	let birthHoliday = $state('');
-	let birthSaving = $state(false);
-	let showBirthModal = $derived($user?.isNew === true);
-
-	const birthHolidayOptions = [
-		{ v: '', l: 'Off' },
-		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
-		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
-	];
-
-	const bdayMonths = [
-		{ v: '', l: '' },
-		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
-		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
-		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
-		{ v: '10', l: 'October' }, { v: '11', l: 'November' }, { v: '12', l: 'December' }
-	];
-	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
-
-	$effect(() => {
-		if (showBirthModal && birthModalEl && !birthModalEl.open) birthModalEl.showModal();
-		if (!showBirthModal && birthModalEl?.open) birthModalEl.close();
-	});
-
-	async function saveFirstBirthday(): Promise<void> {
-		if (birthSaving) return;
-		birthSaving = true;
-		try {
-			if (birthMonth && birthDay) {
-				const b = `${birthMonth}-${birthDay.padStart(2, '0')}`;
-				await api('/api/profile', { method: 'PATCH', body: { birthday: b, holidayReset: birthHoliday } });
-				user.update((u) => (u ? { ...u, birthday: b, holidayReset: birthHoliday, isNew: false } : u));
-			} else {
-				user.update((u) => (u ? { ...u, isNew: false } : u));
-			}
-		} finally {
-			birthSaving = false;
-		}
-	}
-
 	$effect(() => {
 		if (editing && dialogEl && !dialogEl.open) dialogEl.showModal();
 		if (!editing && dialogEl?.open) dialogEl.close();
@@ -507,44 +463,6 @@
 			oncancel={() => (confirmState = null)}
 		/>
 	{/if}
-
-	{#if showBirthModal}
-		<dialog
-			class="birth-dlg"
-			bind:this={birthModalEl}
-			onclose={() => user.update((u) => (u ? { ...u, isNew: false } : u))}
-			aria-label="Set your birthday"
-		>
-			<form class="dlg-card" method="dialog" onsubmit={(e) => { e.preventDefault(); void saveFirstBirthday(); }}>
-				<div class="dlg-head">
-					<h2>What’s your birthday?</h2>
-				</div>
-				<p class="muted">
-					Your list archives around your birthday and Christmas, carrying unclaimed
-					items over to a fresh list. You can add Mother's or Father's Day as a
-					third reset date below. This step is optional; you can always set it
-					later in your profile.
-				</p>
-				<div class="bday-selects">
-					<select class="birth-select" bind:value={birthMonth} aria-label="Birth month">
-						{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
-					</select>
-					<select class="birth-select" bind:value={birthDay} aria-label="Birth day">
-						<option value=""></option>
-						{#each bdayDays as d}<option value={d}>{d}</option>{/each}
-					</select>
-				</div>
-				<label class="birth-holiday" for="birthHolidaySelect">Celebrate Mothers or Fathers Day</label>
-				<select class="birth-select" id="birthHolidaySelect" bind:value={birthHoliday} aria-label="Additional reset holiday">
-					{#each birthHolidayOptions as o}<option value={o.v}>{o.l}</option>{/each}
-				</select>
-				<div class="dlg-menu">
-					<button class="secondary" type="button" onclick={() => (showBirthModal = false)}>Skip</button>
-					<button type="submit" disabled={birthSaving}>Save</button>
-				</div>
-			</form>
-		</dialog>
-	{/if}
 </div>
 
 <style>
@@ -596,25 +514,4 @@
 	.copy-btn:active {
 		transform: scale(0.97);
 	}
-	dialog.birth-dlg {
-		border: none;
-		padding: 0;
-		background: transparent;
-		max-width: none;
-	}
-	dialog.birth-dlg .dlg-card {
-		padding: 1.2rem 1.3rem 1.1rem;
-		max-width: 420px;
-		width: calc(100vw - 2.5rem);
-		background: var(--solid);
-		color: var(--ink);
-		border-radius: 22px;
-		box-shadow: var(--shadow);
-		border: 1px solid var(--line);
-	}
-	dialog.birth-dlg[open] .dlg-card { animation: dlg-in 300ms cubic-bezier(.2,.9,.3,1.2); }
-	dialog.birth-dlg::backdrop { background: rgba(4,6,12,.5); backdrop-filter: blur(6px); }
-	.bday-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 1rem; }
-	.birth-holiday { display: block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin: 1rem 0 0.35rem; }
-	.birth-select { font-size: 1rem; }
 </style>

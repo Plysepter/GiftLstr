@@ -3,22 +3,23 @@
 	import { api } from '../lib/api.js';
 	import { theme, prefs, setTheme, setStyle, setEvents, setUseOwnerTheme, setContrast } from '../lib/theme.svelte.js';
 	import type { ThemeChoice, ThemeStyle } from '../lib/theme.svelte.js';
+	import { BDAY_MONTHS, BDAY_DAYS, HOLIDAY_OPTIONS, parseBday, formatBday } from '../lib/birthday.js';
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
 	import { copyToClipboard } from '../lib/listText.js';
 
 	const styleOptions: ReadonlyArray<{ value: ThemeStyle; label: string; hint: string }> = [
-		{ value: 'aurora', label: 'Aurora', hint: 'Cool' },
+		{ value: 'aurora', label: 'Aurora', hint: 'Neon Glow' },
 		{ value: 'kinetic', label: 'Kinetic', hint: 'Minimal' },
-		{ value: 'aurora-warm', label: 'Warm', hint: 'Sunset' },
-		{ value: 'ocean', label: 'Ocean', hint: 'Blue' },
-		{ value: 'forest', label: 'Forest', hint: 'Green' },
-		{ value: 'berry', label: 'Berry', hint: 'Plum' },
-		{ value: 'gold', label: 'Gold', hint: 'Yellow' },
-		{ value: 'ruby', label: 'Ruby', hint: 'Red' },
-		{ value: 'teal', label: 'Teal', hint: 'Aqua' },
-		{ value: 'dino', label: 'Dino', hint: '🦕 Jungle' },
-		{ value: 'dogs', label: 'Dogs', hint: '🐾 Paws' }
+		{ value: 'aurora-warm', label: 'Twilight', hint: 'Summer Sunset' },
+		{ value: 'ocean', label: 'Oceanic', hint: 'Gentle Waves' },
+		{ value: 'forest', label: 'Forest', hint: 'Mossy woodland' },
+		{ value: 'berry', label: 'Faerie Forest', hint: 'Deep plums and vibrant pinks' },
+		{ value: 'gold', label: 'Daisies', hint: 'Warm golds and greens' },
+		{ value: 'ruby', label: 'Ruby', hint: 'Crimson sheen' },
+		{ value: 'teal', label: 'Lagoon', hint: 'Energetic Pastels' },
+		{ value: 'dino', label: 'Dino', hint: '🦕 Mesozoic greens' },
+		{ value: 'dogs', label: 'Pawprint', hint: '🐾 Autumn coat' }
 	];
 
 	async function pickStyle(style: ThemeStyle): Promise<void> {
@@ -52,12 +53,6 @@
 	let holiday = $state('');
 	let holidayState = $state<'idle' | 'saving' | 'done' | 'error'>('idle');
 
-	const holidayOptions = [
-		{ v: '', l: 'Off' },
-		{ v: 'mothers', l: "Mother's Day (2nd Sunday of May)" },
-		{ v: 'fathers', l: "Father's Day (3rd Sunday of June)" }
-	];
-
 	$effect(() => {
 		const u = $user;
 		if (u) {
@@ -82,15 +77,6 @@
 		}
 	}
 
-	const bdayMonths = [
-		{ v: '', l: '' },
-		{ v: '01', l: 'January' }, { v: '02', l: 'February' }, { v: '03', l: 'March' },
-		{ v: '04', l: 'April' }, { v: '05', l: 'May' }, { v: '06', l: 'June' },
-		{ v: '07', l: 'July' }, { v: '08', l: 'August' }, { v: '09', l: 'September' },
-		{ v: '10', l: 'October' }, { v: '11', l: 'November' }, { v: '12', l: 'December' }
-	];
-	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
-
 	// Seed the selects from the profile once. Do not re-derive on every
 	// $user change: an in-progress edit (or the save itself) would otherwise
 	// be clobbered back to the stored value mid-flight.
@@ -98,18 +84,16 @@
 		const u = $user;
 		if (!u || birthSeeded) return;
 		birthSeeded = true;
-		const parts = (u.birthday ?? '').split('-');
-		if (parts.length === 2 && parts[0] && parts[1]) {
-			birthMonth = parts[0];
-			birthDay = String(parseInt(parts[1], 10));
-		}
+		const p = parseBday(u.birthday ?? '');
+		birthMonth = p.m;
+		birthDay = p.d;
 	});
 
 	async function saveBirthday(e: SubmitEvent): Promise<void> {
 		e.preventDefault();
 		if (birthState === 'saving') return;
 		if (!birthMonth || !birthDay) return;
-		const value = `${birthMonth}-${birthDay.padStart(2, '0')}`;
+		const value = formatBday(birthMonth, birthDay);
 		birthState = 'saving';
 		try {
 			await api('/api/profile', { method: 'PATCH', body: { birthday: value } });
@@ -313,11 +297,11 @@
 		<div class="bday-row">
 			<div class="bday-selects">
 				<select class="bday-select" bind:value={birthMonth} aria-label="Birth month">
-					{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
+					{#each BDAY_MONTHS as m}<option value={m.v}>{m.l}</option>{/each}
 				</select>
 				<select class="bday-select" bind:value={birthDay} aria-label="Birth day">
 					<option value=""></option>
-					{#each bdayDays as d}<option value={d}>{d}</option>{/each}
+					{#each BDAY_DAYS as d}<option value={d}>{d}</option>{/each}
 				</select>
 			</div>
 			<div class="bday-btns">
@@ -353,7 +337,7 @@
 				onchange={(e) => void saveHoliday(e)}
 				aria-label="Additional reset holiday"
 			>
-				{#each holidayOptions as o}<option value={o.v}>{o.l}</option>{/each}
+				{#each HOLIDAY_OPTIONS as o}<option value={o.v}>{o.l}</option>{/each}
 			</select>
 			<span class="holiday-status" class:done={holidayState === 'done'} class:err={holidayState === 'error'}>
 				{#if holidayState === 'done'}Saved

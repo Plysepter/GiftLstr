@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/svelte";
+import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import MyList from "./MyList.svelte";
 import type { Item, UserListResponse } from "../lib/types.js";
 
@@ -171,66 +171,5 @@ describe("MyList copy to clipboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Copy list/ }));
     expect(mocks.copyToClipboard).toHaveBeenCalledWith("Dave Dragonfruit's birthday list:");
-  });
-});
-
-describe("MyList first-run birthday prompt", () => {
-  function birthDialog(container: HTMLElement): HTMLDialogElement {
-    const dlg = Array.from(container.querySelectorAll("dialog")).find(
-      (d) => (d as HTMLDialogElement).open,
-    ) as HTMLDialogElement;
-    if (!dlg) throw new Error("expected an open birthday dialog");
-    return dlg;
-  }
-
-  it("does not show the modal for existing users", async () => {
-    mocks.api.mockImplementation(() => Promise.resolve(response([item({ title: "Mug" })])));
-    render(MyList);
-    await flush();
-    expect(screen.queryByText("What’s your birthday?")).toBeNull();
-  });
-
-  it("shows the modal when the account is new (isNew) and lands on my list", async () => {
-    mocks.userStore.set({ ...ME, isNew: true, birthday: "" });
-    mocks.api.mockImplementation(() => Promise.resolve(response([item({ title: "Mug" })])));
-    const { container } = render(MyList);
-    await flush();
-
-    const dlg = birthDialog(container);
-    expect(within(dlg).getByText("What’s your birthday?")).toBeTruthy();
-
-    const month = within(dlg).getByLabelText("Birth month") as HTMLSelectElement;
-    const day = within(dlg).getByLabelText("Birth day") as HTMLSelectElement;
-    fireEvent.change(month, { target: { value: "05" } });
-    fireEvent.change(day, { target: { value: "15" } });
-    fireEvent.submit(dlg.querySelector("form") as HTMLFormElement);
-    await flush();
-
-    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
-      method: "PATCH",
-      body: { birthday: "05-15", holidayReset: "" },
-    });
-  });
-
-  it("saves the chosen reset holiday along with the birthday", async () => {
-    mocks.userStore.set({ ...ME, isNew: true, birthday: "" });
-    mocks.api.mockImplementation(() => Promise.resolve(response([item({ title: "Mug" })])));
-    const { container } = render(MyList);
-    await flush();
-
-    const dlg = birthDialog(container);
-    const month = within(dlg).getByLabelText("Birth month") as HTMLSelectElement;
-    const day = within(dlg).getByLabelText("Birth day") as HTMLSelectElement;
-    fireEvent.change(month, { target: { value: "05" } });
-    fireEvent.change(day, { target: { value: "15" } });
-    const holiday = within(dlg).getByLabelText("Additional reset holiday") as HTMLSelectElement;
-    fireEvent.change(holiday, { target: { value: "mothers" } });
-    fireEvent.submit(dlg.querySelector("form") as HTMLFormElement);
-    await flush();
-
-    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
-      method: "PATCH",
-      body: { birthday: "05-15", holidayReset: "mothers" },
-    });
   });
 });

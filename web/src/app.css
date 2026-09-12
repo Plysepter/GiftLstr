@@ -7,6 +7,7 @@
   --radius: 20px;
   --radius-sm: 14px;
   --nav-h: calc(54px + env(safe-area-inset-bottom));
+  --nav-side: 0px;
   --oo: 0.45;
   color-scheme: light;
 }
@@ -1465,6 +1466,71 @@ nav.tabbar a.active span.lbl {
   font-weight: 800;
 }
 
+/* ============ wide screens: left side nav ============ */
+/* Content column wide-screen geometry:
+   the sidebar takes --nav-side on the left, so the 640px content column is
+   centered in the remaining viewport space instead of hugging the nav.
+   left  margin = 50% + (nav-side / 2) - 320px
+   right margin = 50% - (nav-side / 2) - 320px            */
+@media (min-width: 900px) {
+  :root {
+    --nav-side: 220px;
+  }
+  #app {
+    margin: 0 calc(50% - var(--nav-side) / 2 - 320px) 0 calc(50% + var(--nav-side) / 2 - 320px);
+  }
+  nav.tabbar {
+    left: 0;
+    right: auto;
+    top: 0;
+    bottom: 0;
+    width: var(--nav-side);
+    height: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 0.15rem;
+    padding: 1.15rem 0.75rem;
+    border-top: none;
+    border-right: 1px solid var(--line);
+    /* desktop: the sidebar is 70% transparent (30% bg), letting the page
+       colour show instead of the heavy 95% mobile pill */
+    background: color-mix(in srgb, var(--bg) 30%, transparent);
+  }
+  html.kb nav.tabbar {
+    transform: none;
+  }
+  nav.tabbar a {
+    flex: 0 0 auto;
+    max-width: none;
+    width: 100%;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 0.7rem;
+    padding: 0.65rem 0.8rem;
+    font-size: 0.85rem;
+    border-radius: 12px;
+  }
+  nav.tabbar a:hover {
+    background: var(--surface);
+  }
+  /* docked composer: align with the content column and sit flush at the
+     viewport bottom (no bottom tab bar to clear on wide screens) */
+  form.composer {
+    margin: 0 calc(50% - var(--nav-side) / 2 - 320px) 0 calc(50% + var(--nav-side) / 2 - 320px);
+    bottom: var(--kb, 0px);
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  /* keep the background art/blobs out from under the side nav */
+  body .bgfx,
+  body .bg-art {
+    left: var(--nav-side);
+  }
+  body .bg-art .a-dino {
+    left: 0;
+  }
+}
+
 /* ============ background FX (F1 prototype blobs) ============ */
 .bgfx {
   position: fixed;
@@ -1509,7 +1575,7 @@ nav.tabbar a.active span.lbl {
   transition: bottom 2s ease;
 
   @media (min-width: 481px) {
-      bottom: -5%;
+    bottom: -5%;
   }
 }
 @keyframes blobA {

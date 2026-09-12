@@ -5,6 +5,7 @@
 	import type { ThemeStyle } from './lib/theme.svelte.js';
 	import LazyRoute from './lib/LazyRoute.svelte';
 	import Nav from './lib/Nav.svelte';
+	import BirthdayModal from './lib/BirthdayModal.svelte';
 	import Weather from './lib/Weather.svelte';
 	import BgFx from './lib/BgFx.svelte';
 	import BgArt from './lib/BgArt.svelte';
@@ -95,4 +96,5 @@
 				</div>
 			{/key}
 			<Nav />
+			<BirthdayModal />
 		{/if}

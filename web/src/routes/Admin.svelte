@@ -6,6 +6,7 @@
 	import { user } from '../lib/auth.js';
 	import { season, seasonOverride, setSeasonOverride } from '../lib/theme.svelte.js';
 	import type { Season } from '../lib/theme.svelte.js';
+	import { BDAY_MONTHS_SHORT, BDAY_DAYS, parseBday, formatBday } from '../lib/birthday.js';
 	import type { AdminUser, AdminUsersResponse } from '../lib/types.js';
 
 	let users = $state<AdminUser[]>([]);
@@ -124,7 +125,7 @@
 		error = '';
 		saved = null;
 		if (!editBirthMonth || !editBirthDay) return;
-		const bday = `${editBirthMonth}-${editBirthDay.padStart(2, '0')}`;
+		const bday = formatBday(editBirthMonth, editBirthDay);
 		try {
 			await api(`/api/admin/users/${u.id}`, { method: 'PATCH', body: { birthday: bday } });
 			u.birthday = bday;
@@ -313,24 +314,8 @@
 
 	let me = $derived($user);
 
-	const bdayMonths = [
-		{ v: '', l: '' },
-		{ v: '01', l: 'Jan' }, { v: '02', l: 'Feb' }, { v: '03', l: 'Mar' },
-		{ v: '04', l: 'Apr' }, { v: '05', l: 'May' }, { v: '06', l: 'Jun' },
-		{ v: '07', l: 'Jul' }, { v: '08', l: 'Aug' }, { v: '09', l: 'Sep' },
-		{ v: '10', l: 'Oct' }, { v: '11', l: 'Nov' }, { v: '12', l: 'Dec' }
-	];
-	const bdayDays = Array.from({ length: 31 }, (_, i) => String(i + 1));
 	let editBirthMonth = $state('');
 	let editBirthDay = $state('');
-
-	function parseBday(b: string): { m: string; d: string } {
-		const parts = b.split('-');
-		if (parts.length === 2 && parts[0] && parts[1]) {
-			return { m: parts[0], d: String(parseInt(parts[1], 10)) };
-		}
-		return { m: '', d: '' };
-	}
 
 	function startEditBday(u: AdminUser): void {
 		const p = parseBday(u.birthday);
@@ -465,11 +450,11 @@
 					>
 						<div class="bday-selects">
 							<select class="bday-select" bind:value={editBirthMonth} aria-label="Birthday month for {u.displayName}" onfocus={() => startEditBday(u)}>
-								{#each bdayMonths as m}<option value={m.v}>{m.l}</option>{/each}
+								{#each BDAY_MONTHS_SHORT as m}<option value={m.v}>{m.l}</option>{/each}
 							</select>
 							<select class="bday-select" bind:value={editBirthDay} aria-label="Birthday day for {u.displayName}" onfocus={() => startEditBday(u)}>
 								<option value=""></option>
-								{#each bdayDays as d}<option value={d}>{d}</option>{/each}
+								{#each BDAY_DAYS as d}<option value={d}>{d}</option>{/each}
 							</select>
 						</div>
 						<button class="secondary" disabled={!editBirthMonth || !editBirthDay}>Save birthday</button>

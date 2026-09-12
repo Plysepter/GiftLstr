@@ -790,4 +790,14 @@
 		background: transparent;
 		border-top: none;
 	}
+
+	/* wide screens: align the suggest bar with the content column and sit it
+	   flush at the viewport bottom (the nav moved to the side) */
+	@media (min-width: 900px) {
+		.suggest-bar {
+			margin: 0 calc(50% - var(--nav-side) / 2 - 320px) 0 calc(50% + var(--nav-side) / 2 - 320px);
+			bottom: var(--kb, 0px);
+			border-radius: var(--radius) var(--radius) 0 0;
+		}
+	}
 </style>
