@@ -177,6 +177,13 @@ async function tryRefresh(): Promise<boolean> {
       refresh_token: t.refreshToken,
       client_id: clientId ?? "",
     });
+    // Authentik does NOT rotate refresh tokens by default: the refresh grant
+    // returns a fresh access_token but omits refresh_token, so a blindly
+    // stored `next` would silently DROP the only thing that keeps the session
+    // alive. Carry the existing one forward unless the provider rotated it.
+    if (!next.refreshToken && t.refreshToken) {
+      next.refreshToken = t.refreshToken;
+    }
     localStorage.setItem(TOKENS_KEY, JSON.stringify(next));
     return true;
   } catch {
@@ -264,7 +271,7 @@ export const oidcProvider: FeAuthProvider = {
           url.searchParams.set("client_id", clientId);
           url.searchParams.set("redirect_uri", redirectUri());
           url.searchParams.set("response_type", "code");
-          url.searchParams.set("scope", "openid profile email");
+          url.searchParams.set("scope", "openid profile email offline_access");
           url.searchParams.set("state", state);
           url.searchParams.set("code_challenge", challenge);
           url.searchParams.set("code_challenge_method", "S256");
