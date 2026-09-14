@@ -36,7 +36,9 @@ export interface FeAuthProvider {
 interface AuthConfig {
   authIssuer?: string;
   authClientId?: string;
-  /** Served true in e2e/demo mode; the Login page shows seeded demo accounts. */
+  // Served true in e2e/demo mode. Informational: the frontend decides e2e
+  // behaviour from the VITE_E2E build flag instead, so the flag value here no
+  // longer gates anything.
   authE2e?: boolean;
 }
 
@@ -46,8 +48,16 @@ const issuer =
 const clientId =
   runtimeConfig.authClientId || (import.meta.env.VITE_AUTHENTIK_CLIENT_ID as string | undefined);
 
-/** True when the backend is running in E2E/demo mode (auth disabled). */
-export const authE2e = runtimeConfig.authE2e === true;
+/**
+ * Compile-time flag: build the web app with VITE_E2E=true for the E2E/demo
+ * backend (see e2e/e2e-server.sh). With it unset — every normal production
+ * build — Vite defines this to `false`, so Rollup folds the branches below
+ * away and the e2e provider / demo-login code is dropped from the bundle.
+ */
+const e2eBuild = import.meta.env.VITE_E2E === "true";
+
+/** True when this build targets the E2E/demo backend (auth disabled). */
+export const authE2e = e2eBuild;
 
 interface OIDCDiscovery {
   issuer: string;
@@ -365,9 +375,11 @@ export const e2eProvider = (token: string): FeAuthProvider => ({
 
 /** Picks the provider for this environment based on the presence of an e2e token. */
 export function pickAuthProvider(): FeAuthProvider {
-  const e2eToken = globalThis.localStorage?.getItem("e2e_token");
-  if (e2eToken) {
-    return e2eProvider(e2eToken);
+  if (e2eBuild) {
+    const e2eToken = globalThis.localStorage?.getItem("e2e_token");
+    if (e2eToken) {
+      return e2eProvider(e2eToken);
+    }
   }
   return oidcProvider;
 }

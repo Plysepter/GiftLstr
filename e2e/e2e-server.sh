@@ -4,7 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-pnpm --dir web build
+# VITE_E2E=true keeps the e2e provider / demo-login code in the bundle; the
+# flag is left unset for normal builds so Rollup drops that code entirely.
+VITE_E2E=true pnpm --dir web build
 rm -rf server/static
 mkdir -p server/static
 cp -r web/dist/* server/static/

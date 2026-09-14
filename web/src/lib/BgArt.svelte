@@ -1,5 +1,5 @@
 <script lang="ts">
-	// Background art for the special styles (dino / dogs).
+	// Background art for the special styles (dino / pawprint).
 	// Rendered from the hand-made images in web/assets; which theme shows is
 	// decided in app.css via [data-style], and the glow (drop-shadow + radial
 	// halos) is applied there too for each light/dark.
@@ -13,7 +13,7 @@
 	<img class="art a-dino" src={greenDino} alt="" loading="lazy" draggable="false" />
 	<img class="art a-dino-blue" src={blueDino} alt="" loading="lazy" draggable="false" />
 
-	<!-- ── dogs ── -->
+	<!-- ── pawprint ── -->
 	<svg class="art a-paw a-paw-1" viewBox="0 0 120 100">
 		<g fill="#FBBF24">
 			<ellipse cx="60" cy="66" rx="24" ry="20" />

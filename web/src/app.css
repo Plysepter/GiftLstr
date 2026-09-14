@@ -1,6 +1,6 @@
 /* ============================================================
    GiftLstr design system — F1-derived
-   Styles: aurora | aurora-warm | kinetic   ×   light | dark
+   Styles: aurora | twilight | kinetic   ×   light | dark
    Seasons: none | christmas | birthday  (data-season on <html>)
    ============================================================ */
 :root {
@@ -89,8 +89,8 @@ html {
   --b3: #a5f3fc;
 }
 
-/* --- style: aurora-warm --- */
-:root[data-style="aurora-warm"] {
+/* --- style: twilight --- */
+:root[data-style="twilight"] {
   --acc: #fb923c;
   --acc-ink: #ea580c;
   --grad: linear-gradient(100deg, #f59e0b, #fb7185 55%, #f472b6);
@@ -102,7 +102,7 @@ html {
   --c-del: #f87171;
   --c-claim: #4ade80;
 }
-:root[data-style="aurora-warm"][data-theme="light"] {
+:root[data-style="twilight"][data-theme="light"] {
   --bg: #faf3ec;
   --solid: #ffffff;
   --surface: rgba(255, 255, 255, 0.62);
@@ -116,7 +116,7 @@ html {
   --b2: #fecdd3;
   --b3: #fde68a;
 }
-:root[data-style="aurora-warm"][data-theme="dark"] {
+:root[data-style="twilight"][data-theme="dark"] {
   --bg: #171009;
   --solid: #241a10;
   --surface: rgba(255, 255, 255, 0.055);
@@ -170,8 +170,8 @@ html {
   display: none;
 }
 
-/* --- style: ocean --- */
-:root[data-style="ocean"] {
+/* --- style: oceanic --- */
+:root[data-style="oceanic"] {
   --acc: #0ea5e9;
   --acc-ink: #0284c7;
   --grad: linear-gradient(100deg, #0ea5e9, #22d3ee 45%, #2563eb);
@@ -186,14 +186,14 @@ html {
   --b2: #22d3ee;
   --b3: #2563eb;
 }
-:root[data-style="ocean"][data-theme="light"] {
+:root[data-style="oceanic"][data-theme="light"] {
   --acc: #0284c7;
   --glow: rgba(14, 165, 233, 0.32);
   --b1: #bae6fd;
   --b2: #a5f3fc;
   --b3: #93c5fd;
 }
-:root[data-style="ocean"][data-theme="dark"] {
+:root[data-style="oceanic"][data-theme="dark"] {
   --b1: #0c4a6e;
   --b2: #075985;
   --b3: #1e3a8a;
@@ -229,8 +229,8 @@ html {
   --b3: #3f6212;
 }
 
-/* --- style: berry --- */
-:root[data-style="berry"] {
+/* --- style: faerie --- */
+:root[data-style="faerie"] {
   --acc: #9333ea;
   --acc-ink: #7e22ce;
   --grad: linear-gradient(100deg, #9333ea, #ec4899 50%, #e879f9);
@@ -245,13 +245,13 @@ html {
   --b2: #f0abfc;
   --b3: #9333ea;
 }
-:root[data-style="berry"][data-theme="light"] {
+:root[data-style="faerie"][data-theme="light"] {
   --acc: #7e22ce;
   --b1: #f3e8ff;
   --b2: #f5d0fe;
   --b3: #9333ea;
 }
-:root[data-style="berry"][data-theme="dark"] {
+:root[data-style="faerie"][data-theme="dark"] {
   --bg: #1a102e;
   --solid: #251845;
   --b1: #6b21a8;
@@ -259,8 +259,8 @@ html {
   --b3: #9333ea;
 }
 
-/* --- style: gold (yellow) --- */
-:root[data-style="gold"] {
+/* --- style: daisies (yellow) --- */
+:root[data-style="daisies"] {
   --acc: #eab308;
   --acc-ink: #ca8a04;
   --grad: linear-gradient(100deg, #f59e0b, #fde047 50%, #a3e635);
@@ -275,7 +275,7 @@ html {
   --b2: #f59e0b;
   --b3: #84cc16;
 }
-:root[data-style="gold"][data-theme="light"] {
+:root[data-style="daisies"][data-theme="light"] {
   --acc: #ca8a04;
   --acc-ink: #a16207;
   --glow: rgba(245, 158, 11, 0.28);
@@ -283,7 +283,7 @@ html {
   --b2: #fde047;
   --b3: #bef264;
 }
-:root[data-style="gold"][data-theme="dark"] {
+:root[data-style="daisies"][data-theme="dark"] {
   --bg: #1a1500;
   --solid: #241c00;
   --b1: #78350f;
@@ -323,8 +323,8 @@ html {
   --b3: #c2410c;
 }
 
-/* --- style: teal --- */
-:root[data-style="teal"] {
+/* --- style: lagoon --- */
+:root[data-style="lagoon"] {
   --acc: #14b8a6;
   --acc-ink: #0d9488;
   --grad: linear-gradient(100deg, #14b8a6, #2dd4bf 45%, #38bdf8);
@@ -339,7 +339,7 @@ html {
   --b2: #22d3ee;
   --b3: #0ea5e9;
 }
-:root[data-style="teal"][data-theme="light"] {
+:root[data-style="lagoon"][data-theme="light"] {
   --acc: #0d9488;
   --acc-ink: #0f766e;
   --glow: rgba(20, 184, 166, 0.3);
@@ -347,7 +347,7 @@ html {
   --b2: #5eead4;
   --b3: #bae6fd;
 }
-:root[data-style="teal"][data-theme="dark"] {
+:root[data-style="lagoon"][data-theme="dark"] {
   --bg: #071412;
   --solid: #0b211e;
   --b1: #134e4a;
@@ -397,8 +397,8 @@ html {
   --b3: #65a30d;
 }
 
-/* --- style: dogs (special) --- */
-:root[data-style="dogs"] {
+/* --- style: pawprint (special) --- */
+:root[data-style="pawprint"] {
   --acc: #d97706;
   --acc-ink: #b45309;
   --grad: linear-gradient(100deg, #92400e, #d97706 45%, #fbbf24);
@@ -413,7 +413,7 @@ html {
   --b2: #d97706;
   --b3: #fbbf24;
 }
-:root[data-style="dogs"][data-theme="light"] {
+:root[data-style="pawprint"][data-theme="light"] {
   --bg: #fffbeb;
   --solid: #ffffff;
   --surface: rgba(255, 255, 255, 0.7);
@@ -426,7 +426,7 @@ html {
   --b2: #fde68a;
   --b3: #d97706;
 }
-:root[data-style="dogs"][data-theme="dark"] {
+:root[data-style="pawprint"][data-theme="dark"] {
   --bg: #1c0f0a;
   --solid: #241a10;
   --surface: rgba(255, 255, 255, 0.05);
@@ -477,7 +477,7 @@ html {
   -webkit-background-clip: initial;
   background-clip: initial;
 }
-/* Hide dino/dogs background art during Christmas */
+/* Hide dino/pawprint background art during Christmas */
 :root[data-season="christmas"] .bg-art .art {
   opacity: 0 !important;
 }
@@ -626,18 +626,15 @@ button.secondary,
   color: var(--acc-ink);
   border: 1.5px solid color-mix(in srgb, var(--acc) 45%, var(--line));
 }
-/* Special themes (dino / dogs) in dark mode: secondary buttons render
-   as primary variants so they stay legible over the illustrated backgrounds. */
+/* Certain themes (dino / pawprint) in dark mode: secondary buttons render
+   as primary variants so they stay legible */
+:root[data-theme="dark"][data-style="faerie"] button.secondary,
+:root[data-theme="dark"][data-style="faerie"] .btn.secondary,
 :root[data-theme="dark"][data-style="dino"] button.secondary,
 :root[data-theme="dark"][data-style="dino"] .btn.secondary,
-:root[data-theme="dark"][data-style="dogs"] button.secondary,
-:root[data-theme="dark"][data-style="dogs"] .btn.secondary {
-  background-image: linear-gradient(100deg, var(--g1), var(--g2), var(--g3), var(--g1));
-  background-size: 400% 100%;
-  animation: grad-cycle 14s ease infinite;
-  color: #fff;
-  border: none;
-  box-shadow: 0 4px 16px -6px var(--glow);
+:root[data-theme="dark"][data-style="pawprint"] button.secondary,
+:root[data-theme="dark"][data-style="pawprint"] .btn.secondary {
+  color: var(--ink);
 }
 button.danger,
 .btn.danger {
@@ -1474,7 +1471,7 @@ nav.tabbar a.active span.lbl {
    right margin = 50% - (nav-side / 2) - 320px            */
 @media (min-width: 900px) {
   :root {
-    --nav-side: 220px;
+    --nav-side: 180px;
   }
   #app {
     margin: 0 calc(50% - var(--nav-side) / 2 - 320px) 0 calc(50% + var(--nav-side) / 2 - 320px);
@@ -1719,7 +1716,7 @@ body.fx-orbs .bgfx i:nth-child(3) {
 }
 
 /* ============ themed background art (special styles) ============ */
-/* Hand-drawn vector art for dino / dogs. Rendered by BgArt.svelte;
+/* Hand-drawn vector art for dino / pawprint. Rendered by BgArt.svelte;
    hidden by default and revealed via [data-style], with fixed-opacity art so the
    light/dark blobs stay as a soft wash behind it. */
 .bg-art {
@@ -1782,12 +1779,12 @@ body.fx-orbs .bgfx i:nth-child(3) {
 :root[data-style="dino"][data-theme="dark"] .bg-art .a-dino-blue {
   opacity: 0.6;
 }
-:root[data-style="dogs"] .bg-art .a-dog,
-:root[data-style="dogs"] .bg-art .a-paw {
+:root[data-style="pawprint"] .bg-art .a-dog,
+:root[data-style="pawprint"] .bg-art .a-paw {
   opacity: 0.88;
 }
-:root[data-style="dogs"][data-theme="dark"] .bg-art .a-dog,
-:root[data-style="dogs"][data-theme="dark"] .bg-art .a-paw {
+:root[data-style="pawprint"][data-theme="dark"] .bg-art .a-dog,
+:root[data-style="pawprint"][data-theme="dark"] .bg-art .a-paw {
   opacity: 0.58;
 }
 
@@ -1805,11 +1802,11 @@ body.fx-orbs .bgfx i:nth-child(3) {
 
 /* keep special-style blobs behind the art as a soft wash, not competing colours */
 :root[data-style="dino"] .bgfx i,
-:root[data-style="dogs"] .bgfx i {
+:root[data-style="pawprint"] .bgfx i {
   opacity: 0.3;
 }
 :root[data-theme="light"][data-style="dino"] .bgfx i,
-:root[data-theme="light"][data-style="dogs"] .bgfx i {
+:root[data-theme="light"][data-style="pawprint"] .bgfx i {
   opacity: 0.15;
 }
 

@@ -229,10 +229,10 @@ func normalizeMMDD(s string) string {
 }
 
 var validThemeStyles = map[string]bool{
-	"aurora": true, "aurora-warm": true, "kinetic": true,
-	"ocean": true, "forest": true, "berry": true,
-	"gold": true, "ruby": true, "teal": true,
-	"dino": true, "dogs": true,
+	"aurora": true, "twilight": true, "kinetic": true,
+	"oceanic": true, "forest": true, "faerie": true,
+	"daisies": true, "ruby": true, "lagoon": true,
+	"dino": true, "pawprint": true,
 }
 
 func handleProfile(w http.ResponseWriter, r *http.Request) {

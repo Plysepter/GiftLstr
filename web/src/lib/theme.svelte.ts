@@ -1,30 +1,30 @@
 export type ThemeChoice = "system" | "light" | "dark";
 export type ThemeStyle =
   | "aurora"
-  | "aurora-warm"
+  | "twilight"
   | "kinetic"
-  | "ocean"
+  | "oceanic"
   | "forest"
-  | "berry"
-  | "gold"
+  | "faerie"
+  | "daisies"
   | "ruby"
-  | "teal"
+  | "lagoon"
   | "dino"
-  | "dogs";
+  | "pawprint";
 export type Season = "none" | "christmas" | "birthday";
 
 export const ALL_STYLES: ThemeStyle[] = [
   "aurora",
-  "aurora-warm",
+  "twilight",
   "kinetic",
-  "ocean",
+  "oceanic",
   "forest",
-  "berry",
-  "gold",
+  "faerie",
+  "daisies",
   "ruby",
-  "teal",
+  "lagoon",
   "dino",
-  "dogs",
+  "pawprint",
 ];
 
 const KEY = "theme";

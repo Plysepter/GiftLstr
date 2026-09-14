@@ -731,7 +731,7 @@
 	}
 
 	.page-body {
-		animation: page-in 240ms ease-out both;
+		animation: page-in 240ms ease-out backwards;
 	}
 	@keyframes page-in {
 		from {

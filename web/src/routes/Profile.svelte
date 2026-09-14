@@ -8,18 +8,18 @@
 	import Icon from '../lib/Icon.svelte';
 	import { copyToClipboard } from '../lib/listText.js';
 
-	const styleOptions: ReadonlyArray<{ value: ThemeStyle; label: string; hint: string }> = [
-		{ value: 'aurora', label: 'Aurora', hint: 'Neon Glow' },
-		{ value: 'kinetic', label: 'Kinetic', hint: 'Minimal' },
-		{ value: 'aurora-warm', label: 'Twilight', hint: 'Summer Sunset' },
-		{ value: 'ocean', label: 'Oceanic', hint: 'Gentle Waves' },
-		{ value: 'forest', label: 'Forest', hint: 'Mossy woodland' },
-		{ value: 'berry', label: 'Faerie Forest', hint: 'Deep plums and vibrant pinks' },
-		{ value: 'gold', label: 'Daisies', hint: 'Warm golds and greens' },
-		{ value: 'ruby', label: 'Ruby', hint: 'Crimson sheen' },
-		{ value: 'teal', label: 'Lagoon', hint: 'Energetic Pastels' },
-		{ value: 'dino', label: 'Dino', hint: '🦕 Mesozoic greens' },
-		{ value: 'dogs', label: 'Pawprint', hint: '🐾 Autumn coat' }
+	const styleOptions: ReadonlyArray<{ value: ThemeStyle; label: string; }> = [
+		{ value: 'aurora', label: 'Aurora' },
+		{ value: 'kinetic', label: 'Kinetic'},
+		{ value: 'twilight', label: 'Twilight' },
+		{ value: 'oceanic', label: 'oceanicic' },
+		{ value: 'forest', label: 'Forest' },
+		{ value: 'faerie', label: 'Faerie' },
+		{ value: 'daisies', label: 'Daisies' },
+		{ value: 'ruby', label: 'Ruby' },
+		{ value: 'lagoon', label: 'Lagoon' },
+		{ value: 'dino', label: 'Dino' },
+		{ value: 'pawprint', label: 'Pawprint' }
 	];
 
 	async function pickStyle(style: ThemeStyle): Promise<void> {
@@ -221,7 +221,6 @@
 				<button type="button" class="style-opt" class:on={prefs.style === opt.value} onclick={() => void pickStyle(opt.value)}>
 					<span class="swatch sw-{opt.value}"></span>
 					<b>{opt.label}</b>
-					<span class="hint">{opt.hint}</span>
 				</button>
 			{/each}
 		</div>
@@ -369,16 +368,16 @@
 		box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 18%, transparent); }
 	.swatch { width: 100%; height: 26px; border-radius: 8px; margin-bottom: 0.35rem; }
 	.sw-aurora { background: linear-gradient(100deg, #818cf8, #e879f9 50%, #22d3ee); }
-	.sw-aurora-warm { background: linear-gradient(100deg, #f59e0b, #fb7185 55%, #f472b6); }
+	.sw-twilight { background: linear-gradient(100deg, #f59e0b, #fb7185 55%, #f472b6); }
 	.sw-kinetic { background: linear-gradient(100deg, #fafafa 60%, #4f46e5); }
-	.sw-ocean { background: linear-gradient(100deg, #0ea5e9, #22d3ee 45%, #2563eb); }
+	.sw-oceanic { background: linear-gradient(100deg, #0ea5e9, #22d3ee 45%, #2563eb); }
 	.sw-forest { background: linear-gradient(100deg, #16a34a, #34d399 50%, #a3e635); }
-	.sw-berry { background: linear-gradient(100deg, #9333ea, #ec4899 50%, #e879f9); }
-	.sw-gold { background: linear-gradient(100deg, #f59e0b, #fde047 50%, #a3e635); }
+	.sw-faerie { background: linear-gradient(100deg, #9333ea, #ec4899 50%, #e879f9); }
+	.sw-daisies { background: linear-gradient(100deg, #f59e0b, #fde047 50%, #a3e635); }
 	.sw-ruby { background: linear-gradient(100deg, #dc2626, #f43f5e 50%, #fb923c); }
-	.sw-teal { background: linear-gradient(100deg, #14b8a6, #2dd4bf 45%, #38bdf8); }
+	.sw-lagoon { background: linear-gradient(100deg, #14b8a6, #2dd4bf 45%, #38bdf8); }
 	.sw-dino { background: linear-gradient(100deg, #3f6212, #84cc16 45%, #facc15 90%); }
-	.sw-dogs { background: linear-gradient(100deg, #92400e, #d97706 45%, #fbbf24); }
+	.sw-pawprint { background: linear-gradient(100deg, #92400e, #d97706 45%, #fbbf24); }
 	.hint { font-size: 0.72rem; color: var(--muted); }
 	.event-row { display: flex; align-items: flex-start; gap: 0.65rem; margin-top: 1.1rem; cursor: pointer; }
 	.event-row input { width: 20px; height: 20px; accent-color: var(--acc); margin-top: 0.15rem; }
