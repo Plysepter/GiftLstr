@@ -17,6 +17,9 @@ services:
     image: giftlstr-giftlstr-demo:latest
     build:
       context: ../..
+      # Keep the demo/e2e login picker in the bundle (see Dockerfile).
+      args:
+        VITE_E2E: "true"
     entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]
     ports:
       # PORT sets both the container's internal listen port and the published

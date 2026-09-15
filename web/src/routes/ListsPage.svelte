@@ -32,6 +32,7 @@
 	}
 	$effect(() => {
 		void page;
+		void network.synced;
 		void load();
 	});
 

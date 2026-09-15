@@ -30,7 +30,11 @@
 			loading = false;
 		}
 	}
-	load();
+	// Initial load, and a fresh fetch whenever connectivity returns.
+	$effect(() => {
+		void network.synced;
+		void load();
+	});
 
 	let items = $derived(data ? data.items.filter((i) => !i.removedAt || i.claimed) : []);
 </script>

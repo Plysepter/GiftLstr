@@ -55,7 +55,7 @@ vi.mock("../lib/confetti.js", () => ({ confetti: vi.fn() }));
 vi.mock("../lib/offlineQueue.js", () => ({
   enqueueItem: vi.fn(),
   isOfflineError: () => false,
-  pendingItems: () => [],
+  pendingForList: () => [],
   syncPendingItems: () => Promise.resolve(),
   startAutoSync: vi.fn(),
 }));

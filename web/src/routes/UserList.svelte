@@ -2,6 +2,7 @@
 	import { api } from '../lib/api.js';
 	import { user } from '../lib/auth.js';
 	import type { Item, UserListResponse } from '../lib/types.js';
+	import { normalizeItemURL } from '../lib/types.js';
 	import LinkPreview from '../lib/LinkPreview.svelte';
 	import ItemTile from '../lib/ItemTile.svelte';
 	import EmptyState from '../lib/EmptyState.svelte';
@@ -10,7 +11,13 @@
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
 	import { confetti } from '../lib/confetti.js';
-	import { isOfflineError } from '../lib/offlineQueue.js';
+	import {
+		enqueuePrivateItem,
+		isOfflineError,
+		pendingForList,
+		syncPendingItems,
+		type PendingItem
+	} from '../lib/offlineQueue.js';
 	import { network } from '../lib/network.svelte.js';
 	import { season, prefs, resolveSeason, ALL_STYLES, ownerStyleOverride, apply } from '../lib/theme.svelte.js';
 	import type { ThemeStyle } from '../lib/theme.svelte.js';
@@ -28,6 +35,7 @@
 	let revealClaimers = $state(false);
 	let copied = $state(false);
 	let privateError = $state('');
+	let pending = $state<PendingItem[]>([]);
 	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
 
 	const canHover = matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -151,6 +159,23 @@
 	}
 	load();
 
+	function refreshPending(): void {
+		pending = pendingForList('private', userId);
+	}
+	refreshPending();
+
+	let lastSynced = network.synced;
+	$effect(() => {
+		if (network.synced !== lastSynced) {
+			lastSynced = network.synced;
+			void (async () => {
+				await syncPendingItems();
+				refreshPending();
+				await load();
+			})();
+		}
+	});
+
 	async function setReveal(v: boolean): Promise<void> {
 		revealClaimers = v;
 		await load();
@@ -183,9 +208,20 @@
 			await load();
 			return true;
 		} catch (err) {
+			if (isOfflineError(err)) {
+				enqueuePrivateItem(userId, item.title, normalizeItemURL(item.url) ?? '', item.notes);
+				refreshPending();
+				return true;
+			}
 			privateError = err instanceof Error ? err.message : String(err);
 			return false;
 		}
+	}
+
+	async function syncNow(): Promise<void> {
+		await syncPendingItems();
+		refreshPending();
+		await load();
 	}
 
 	function confirmDeletePrivate(item: Item): void {
@@ -338,6 +374,12 @@
 	{:else if error}
 		<ErrorState message={error} onRetry={() => void load()} />
 	{/if}
+	{#if pending.length > 0}
+		<div class="spread" style="margin-bottom:.75rem">
+			<span class="badge warn unsynced-pulse">{pending.length} unsynced</span>
+			<button class="ghost" type="button" onclick={() => void syncNow()}>Try sync now</button>
+		</div>
+	{/if}
 
 <ul class="items">
 		{#each selfAuthored as item (item.id)}
@@ -354,7 +396,7 @@
 							<button
 								class="claim-btn"
 								class:on={item.claimedByMe}
-								disabled={item.claimed && !item.claimedByMe}
+								disabled={(item.claimed && !item.claimedByMe) || network.offline}
 								onclick={(e) => toggleClaim(item, e)}
 							>
 								<Icon name={item.claimedByMe ? 'check' : 'heart'} size={15} />
@@ -396,7 +438,7 @@
 							<button
 								class="claim-btn"
 								class:on={item.claimedByMe}
-								disabled={item.claimed && !item.claimedByMe}
+								disabled={(item.claimed && !item.claimedByMe) || network.offline}
 								onclick={(e) => toggleClaim(item, e)}
 							>
 								<Icon name={item.claimedByMe ? 'check' : 'heart'} size={15} />
@@ -420,6 +462,7 @@
 									class="act del"
 									aria-label="Unshare {item.title}"
 									title="Remove from shared suggestions"
+									disabled={network.offline}
 									onclick={() => confirmUnshareSuggested(item)}
 								>
 									<Icon name="trash" />
@@ -439,7 +482,7 @@
 		ready={!loading && !error && !network.offline && data !== null && visible.length === 0}
 	/>
 
-	{#if privateIdeas.length > 0}
+	{#if privateIdeas.length > 0 || pending.length > 0}
 		<div class="section-divider private-divider">
 			<span class="section-label">
 				<Icon name="key" size={13} /> Private ideas
@@ -460,6 +503,7 @@
 							<button
 								class="claim-btn"
 								class:on={item.claimedByMe}
+								disabled={network.offline}
 								onclick={(e) => toggleClaim(item, e)}
 							>
 								<Icon name={item.claimedByMe ? 'check' : 'heart'} size={15} />
@@ -478,6 +522,7 @@
 								class="act share"
 								aria-label="Share {item.title}"
 								title="Share publicly on this list"
+								disabled={network.offline}
 								onclick={() => confirmSharePrivate(item)}
 							>
 								<Icon name="share" />
@@ -486,11 +531,25 @@
 								class="act del"
 								aria-label="Delete private idea {item.title}"
 								title="Delete permanently"
+								disabled={network.offline}
 								onclick={() => confirmDeletePrivate(item)}
 							>
 								<Icon name="trash" />
 							</button>
 						</div>
+					</article>
+				</li>
+			{/each}
+			{#each pending as p (p.localId)}
+				<li class="itemcard private-item">
+					<article class="card">
+						<div class="row1">
+							<span class="tile">{p.title.slice(0, 1).toUpperCase()}</span>
+							<div class="txt"><h3>{p.title}</h3></div>
+						</div>
+<div class="body">
+						<span class="badge warn unsynced-pulse pending-badge">unsynced</span>
+					</div>
 					</article>
 				</li>
 			{/each}
@@ -582,6 +641,9 @@
 		margin-top: 0.65rem;
 		margin-right: 0.4rem;
 	}
+	.pending-badge {
+		margin-top: 0.65rem;
+	}
 
 	.act.share {
 		background: color-mix(in srgb, var(--acc) 14%, transparent);
@@ -604,6 +666,9 @@
 		margin-top: 0;
 	}
 	/* Suggested item: badges stay left, delete button pushed to the far right. */
+	.suggested-list .secondary-actions {
+		justify-content: flex-start;
+	}
 	.suggested-list .secondary-actions .act.del {
 		margin-left: auto;
 	}

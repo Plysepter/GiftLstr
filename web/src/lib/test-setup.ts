@@ -36,4 +36,42 @@ if (typeof HTMLDialogElement !== "undefined") {
   }
 }
 
+/** jsdom with an opaque origin has no usable localStorage; fall back to an
+ * in-memory implementation so modules that read it (e.g. the offline queue)
+ * behave in tests. */
+if (typeof window !== "undefined") {
+  let broken = false;
+  if (typeof window.localStorage === "object") {
+    try {
+      window.localStorage.setItem("__giftlstr_probe__", "1");
+      window.localStorage.removeItem("__giftlstr_probe__");
+    } catch {
+      broken = true;
+    }
+  } else {
+    broken = true;
+  }
+  if (broken) {
+    const store = new Map<string, string>();
+    const memStorage: Storage = {
+      get length() {
+        return store.size;
+      },
+      clear: () => store.clear(),
+      getItem: (k) => (store.has(k) ? store.get(k)! : null),
+      key: (i) => [...store.keys()][i] ?? null,
+      removeItem: (k) => void store.delete(k),
+      setItem: (k, v) => void store.set(k, String(v)),
+    };
+    Object.defineProperty(window, "localStorage", {
+      value: memStorage,
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      value: memStorage,
+      configurable: true,
+    });
+  }
+}
+
 export {};

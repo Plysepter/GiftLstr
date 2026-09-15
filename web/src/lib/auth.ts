@@ -1,6 +1,7 @@
 import { writable } from "svelte/store";
 import { api } from "./api.js";
 import { setTokenGetter } from "./token.js";
+import { clearQueue } from "./offlineQueue.js";
 import { authE2e, pickAuthProvider, type FeAuthProvider } from "./providers.js";
 import type { User } from "./types.js";
 
@@ -93,5 +94,15 @@ export async function signOut(): Promise<void> {
   explicitSignOut = true;
   await provider.signOut();
   user.set(null);
+  // No cached lists, offline queue, or other account's data may survive a sign-out.
+  clearQueue();
+  if ("serviceWorker" in navigator) {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      reg?.active?.postMessage({ type: "giftlstr-clear" });
+    } catch {
+      // Service worker unreachable; nothing to clear.
+    }
+  }
   window.location.hash = "/";
 }

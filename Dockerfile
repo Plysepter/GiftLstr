@@ -1,6 +1,10 @@
 # --- frontend build ---
 FROM node:22-alpine AS web
 WORKDIR /src
+# Demo builds (docker/giftlstr/docker-compose.demo.yml) pass VITE_E2E=true so the
+# demo-account picker and e2e token provider stay in the bundle; the production
+# compose leaves it unset and the demo code is dropped.
+ARG VITE_E2E
 COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml ./
 # pnpm's install occasionally SIGSEGVs (exit 139) while spawning its link worker
 # threads under constrained/kernel-specific conditions. It is transient and a
@@ -14,7 +18,7 @@ RUN corepack enable && \
       sleep 2; \
     done
 COPY web/ .
-RUN pnpm run build
+RUN VITE_E2E=${VITE_E2E} pnpm run build
 
 # --- backend build ---
 # go1.26's compiler crashes on the generated modernc.org/sqlite source and on

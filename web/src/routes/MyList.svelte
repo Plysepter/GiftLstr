@@ -17,7 +17,7 @@
 	import {
 		enqueueItem,
 		isOfflineError,
-		pendingItems,
+		pendingForList,
 		syncPendingItems,
 		startAutoSync,
 		type PendingItem
@@ -72,12 +72,24 @@
 	}
 
 	function refreshPending(): void {
-		pending = pendingItems();
+		pending = pendingForList('own');
 	}
 
 	load();
 	refreshPending();
 	startAutoSync();
+
+	let lastSynced = network.synced;
+	$effect(() => {
+		if (network.synced !== lastSynced) {
+			lastSynced = network.synced;
+			void (async () => {
+				await syncPendingItems();
+				refreshPending();
+				await load();
+			})();
+		}
+	});
 
 	let activeItems = $derived(items.filter((i) => !i.removedAt));
 	let removedItems = $derived(items.filter((i) => i.removedAt));
@@ -205,7 +217,7 @@
 	let drag: DragCtx | null = null;
 
 	function onDragStart(e: PointerEvent, index: number): void {
-		if (drag || !listEl || e.button > 0) return;
+		if (network.offline || drag || !listEl || e.button > 0) return;
 		const lis = [
 			...(listEl.querySelectorAll<HTMLLIElement>('li[data-item]') ?? [])
 		];
@@ -356,16 +368,17 @@
 						
 					</div>
 					<div class="actions">
-						<button class="act edit" aria-label="Edit {item.title}" onclick={() => openEdit(item)}>
+						<button class="act edit" aria-label="Edit {item.title}" disabled={network.offline} onclick={() => openEdit(item)}>
 							<Icon name="edit" />
 						</button>
-						<button class="act del" aria-label="Remove {item.title}" onclick={() => removeItem(item)}>
+						<button class="act del" aria-label="Remove {item.title}" disabled={network.offline} onclick={() => removeItem(item)}>
 							<Icon name="trash" />
 						</button>
 						<button
 							class="act drag"
 							aria-label="Reorder {item.title}"
 							title="Drag to reorder (or use arrow keys)"
+							disabled={network.offline}
 							onpointerdown={(e) => onDragStart(e, i)}
 							onkeydown={(e) => onDragKey(e, i)}
 						>
@@ -382,7 +395,9 @@
 					<div class="row1">
 						<span class="tile">{p.title.slice(0, 1).toUpperCase()}</span>
 						<div class="txt"><h3>{p.title}</h3></div>
-						<span class="badge warn unsynced-pulse">unsynced</span>
+					</div>
+					<div class="body">
+						<span class="badge warn unsynced-pulse pending-badge">unsynced</span>
 					</div>
 				</article>
 			</li>
@@ -410,7 +425,7 @@
 							<ItemTile title={item.title} url={item.url} />
 							<div class="txt"><h3>{item.title}</h3></div>
 							<div class="actions">
-								<button class="restore-btn" onclick={(e) => restoreItem(item, e)}>
+								<button class="restore-btn" disabled={network.offline} onclick={(e) => restoreItem(item, e)}>
 									<Icon name="undo" size={14} /> Restore
 								</button>
 							</div>
@@ -490,6 +505,9 @@
 		color: var(--muted);
 		font-size: 0.88rem;
 		line-height: 1.5;
+	}
+	.pending-badge {
+		margin-top: 0.65rem;
 	}
 	.copy-btn {
 		cursor: pointer;
