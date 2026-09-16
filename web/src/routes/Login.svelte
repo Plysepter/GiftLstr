@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { openSignIn } from '../lib/auth.js';
 	import { authE2e } from '../lib/providers.js';
+	import Loader from '../lib/Loader.svelte';
 
 	interface DemoUser {
 		username: string;
@@ -65,7 +66,7 @@
 		<h2>Demo accounts</h2>
 		<p class="muted">No identity provider here. Jump straight into a seeded account.</p>
 		{#if demoUsers === null}
-			<p class="muted">Loading accounts…</p>
+			<Loader minHeight="7rem" label="Loading demo accounts" />
 		{:else if demoUsers.length > 0}
 			<ul class="demo-list">
 				{#each demoUsers as u (u.username)}

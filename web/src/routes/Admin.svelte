@@ -1,6 +1,7 @@
 <script lang="ts">
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
+	import Loader from '../lib/Loader.svelte';
 	import ConfirmDialog from '../lib/ConfirmDialog.svelte';
 	import { api } from '../lib/api.js';
 	import { user } from '../lib/auth.js';
@@ -384,7 +385,7 @@
 				aria-label="Search users"
 			/>
 		</div>
-		{#if loading}<p class="muted">Loading…</p>{/if}
+		{#if loading}<Loader minHeight="10rem" />{/if}
 
 		{#each users as u (u.id)}
 			<div class="card admin-card">

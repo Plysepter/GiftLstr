@@ -4,6 +4,7 @@
 			import { computeSeason, prefs, ALL_STYLES } from './lib/theme.svelte.js';
 	import type { ThemeStyle } from './lib/theme.svelte.js';
 	import LazyRoute from './lib/LazyRoute.svelte';
+	import Loader from './lib/Loader.svelte';
 	import Nav from './lib/Nav.svelte';
 	import BirthdayModal from './lib/BirthdayModal.svelte';
 	import Weather from './lib/Weather.svelte';
@@ -67,7 +68,7 @@
 <BgArt />
 <Weather />
 {#if !$loaded}
-			<p class="muted" style="padding:1.5rem 0">Loading…</p>
+			<Loader minHeight="100dvh" />
 		{:else if !$user}
 			<LazyRoute load={() => import('./routes/Login.svelte')} />
 		{:else}

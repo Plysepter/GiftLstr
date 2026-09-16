@@ -6,6 +6,7 @@
 	import { BDAY_MONTHS, BDAY_DAYS, HOLIDAY_OPTIONS, parseBday, formatBday } from '../lib/birthday.js';
 	import PageHeader from '../lib/PageHeader.svelte';
 	import Icon from '../lib/Icon.svelte';
+	import Loader from '../lib/Loader.svelte';
 	import { copyToClipboard } from '../lib/listText.js';
 
 	const styleOptions: ReadonlyArray<{ value: ThemeStyle; label: string; }> = [
@@ -192,7 +193,7 @@
 </script>
 
 {#if !$loaded}
-	<p class="muted">Loading…</p>
+	<Loader />
 {:else if !$user}
 	<p class="muted">Sign in required.</p>
 {:else}
