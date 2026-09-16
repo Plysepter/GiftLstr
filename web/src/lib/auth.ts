@@ -23,6 +23,37 @@ let signInErrorShown = false;
 let inOAuthCallback = false;
 let redirectRequested = false;
 
+// A durable marker that an explicit sign-out happened, kept in localStorage so
+// it survives a reload or another tab. While it is set the app shows the in-app
+// Login screen instead of auto-redirecting to the identity provider — whose
+// still-live SSO session would otherwise silently log the same user back in.
+// It is cleared only once a new session is actually established.
+const SIGNOUT_KEY = "giftlstr:signed-out";
+
+function hadExplicitSignOut(): boolean {
+  try {
+    return localStorage.getItem(SIGNOUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markSignedOut(): void {
+  try {
+    localStorage.setItem(SIGNOUT_KEY, "1");
+  } catch {
+    // Storage unavailable: the in-memory explicitSignOut flag still guards this tab.
+  }
+}
+
+function clearSignOutMarker(): void {
+  try {
+    localStorage.removeItem(SIGNOUT_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("giftlstr-signin-error", () => {
     signInErrorShown = true;
@@ -31,7 +62,15 @@ if (typeof window !== "undefined") {
 
 /** Send the user to the provider's login page unless the in-app one is meant to show. */
 function maybeRedirectToSignIn(): void {
-  if (authE2e || explicitSignOut || signInErrorShown || inOAuthCallback || redirectRequested) return;
+  if (
+    authE2e ||
+    explicitSignOut ||
+    hadExplicitSignOut() ||
+    signInErrorShown ||
+    inOAuthCallback ||
+    redirectRequested
+  )
+    return;
   redirectRequested = true;
   provider.openSignIn();
 }
@@ -44,6 +83,7 @@ async function onSessionChange(active: boolean): Promise<void> {
   }
   explicitSignOut = false;
   signInErrorShown = false;
+  clearSignOutMarker();
   try {
     const data = await api<{ user: User }>("/api/me");
     user.set(data.user);
@@ -59,8 +99,7 @@ async function init(): Promise<void> {
   // While the OAuth callback is being exchanged, a (premature) "no session"
   // notification from the subscription below must not bounce the user back to
   // Authentik before the callback has had a chance to complete.
-  inOAuthCallback =
-    typeof window !== "undefined" && window.location.pathname === "/signin-oauth";
+  inOAuthCallback = typeof window !== "undefined" && window.location.pathname === "/signin-oauth";
   try {
     await provider.ready();
     setTokenGetter(() => provider.getToken());
@@ -87,11 +126,16 @@ void init();
 
 /** Opens the active provider's sign-in UI. */
 export function openSignIn(): void {
-  provider.openSignIn();
+  // Manual sign-in from the in-app Login screen always requests the identity
+  // provider's own credentials form (prompt=login). Without it a still-live
+  // Authentik SSO session silently logs the previous user straight back in,
+  // leaving no way to switch accounts.
+  provider.openSignIn({ prompt: "login" });
 }
 
 export async function signOut(): Promise<void> {
   explicitSignOut = true;
+  markSignedOut();
   await provider.signOut();
   user.set(null);
   // No cached lists, offline queue, or other account's data may survive a sign-out.

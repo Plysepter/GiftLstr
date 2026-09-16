@@ -18,8 +18,10 @@ export interface FeAuthProvider {
    * appears and false when it is cleared. Returns an unsubscribe function.
    */
   onSessionChange(cb: (active: boolean) => void): () => void;
-  /** Start the provider's sign-in flow (may navigate away). */
-  openSignIn(): void;
+  /** Start the provider's sign-in flow (may navigate away). `prompt` is passed
+   * through as the OIDC `prompt` parameter — e.g. "login" to force the
+   * provider's credentials form even when an SSO session already exists. */
+  openSignIn(opts?: { prompt?: string }): void;
   /** Complete a provider-initiated redirect (SSO callback) if one is pending. */
   completeOAuthSignIn?(): Promise<void>;
   /** Sign the user out at the provider. */
@@ -261,7 +263,7 @@ export const oidcProvider: FeAuthProvider = {
       lastNotified = null;
     };
   },
-  openSignIn(): void {
+  openSignIn(opts?: { prompt?: string }): void {
     // Authorization Code + PKCE: send the browser to Authentik (via the
     // authorization endpoint from the proxied discovery document), which
     // either shows its own login (email/password, sources, MFA…) or completes
@@ -285,6 +287,9 @@ export const oidcProvider: FeAuthProvider = {
           url.searchParams.set("state", state);
           url.searchParams.set("code_challenge", challenge);
           url.searchParams.set("code_challenge_method", "S256");
+          if (opts?.prompt) {
+            url.searchParams.set("prompt", opts.prompt);
+          }
           window.location.assign(url.toString());
         },
         (err) => {
@@ -363,7 +368,7 @@ export const e2eProvider = (token: string): FeAuthProvider => ({
   onSessionChange(): () => void {
     return () => {};
   },
-  openSignIn(): void {
+  openSignIn(_opts?: { prompt?: string }): void {
     // no-op in test mode
   },
   async signOut(): Promise<void> {
