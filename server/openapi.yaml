@@ -66,6 +66,13 @@ components:
         birthday:
           type: string
           description: Reset date for the birthday list, formatted MM-DD.
+        allowSuggestions:
+          type: boolean
+        spendingEnabled:
+          type: boolean
+          description: >
+            When true the user can attach private prices to items they claim and
+            see their running total spend.
         themeStyle:
           type: string
           description: Active theme, defaults to "aurora".
@@ -100,6 +107,12 @@ components:
           description: >
             Only present where exposing the claimer is allowed (own list and
             archived lists).
+        mySpendCents:
+          type: integer
+          description: >
+            The viewer's private price on this item in cents. Only present for
+            items the viewer holds a claim on and when spending tracking is
+            enabled.
       required: [id, title, url, notes, removedAt, claimed, claimedByMe]
     ListUser:
       type: object
@@ -124,6 +137,11 @@ components:
             $ref: '#/components/schemas/Item'
         isOwner:
           type: boolean
+        totalSpendCents:
+          type: integer
+          description: >
+            The viewer's private spend in cents on the active items of exactly
+            this list. Only present when spending tracking is enabled.
       required: [user, items, isOwner]
     ListsPageUser:
       type: object
@@ -148,6 +166,12 @@ components:
         claimedLabel:
           type: string
           description: 'e.g. "claimed 2 items", empty when nothing is claimed.'
+        spendCents:
+          type: integer
+          description: >
+            The viewer's private spend in cents on this user's active list.
+            Only present when the viewer has claimed something and spending
+            tracking is enabled.
       required: [id, displayName, username, birthday, myClaims, connected, canView, claimedLabel]
     ListsPageResponse:
       type: object
@@ -336,6 +360,9 @@ paths:
                 birthday:
                   type: string
                   description: MM-DD reset date.
+                spendingEnabled:
+                  type: boolean
+                  description: Toggle private spending tracking.
               required: [birthday]
       responses:
         '200':
@@ -586,6 +613,64 @@ paths:
                 $ref: '#/components/schemas/Ok'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: You have not claimed this item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/items/{id}/price:
+    patch:
+      summary: Set the private price on an item you claimed
+      description: >
+        Records how much you spent on this gift. The price is stored on your
+        claim and is only ever visible to you. Passing a price of 0 clears it.
+        Requires spending tracking to be enabled on your profile.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                price:
+                  type: number
+                  description: Price in dollars, e.g. 12.34. 0 clears it.
+              required: [price]
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  mySpendCents:
+                    type: integer
+                    description: The stored price in cents for this item.
+                  totalSpendCents:
+                    type: integer
+                    description: Your private spend in cents on the active items of this item's list.
+                required: [ok, mySpendCents, totalSpendCents]
+        '400':
+          description: Bad price value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Spending tracking is disabled on your profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           description: You have not claimed this item.
           content:

@@ -181,6 +181,30 @@
 		}
 	}
 
+	let spendEnabled = $state(false);
+	let spendBusy = $state(false);
+
+	$effect(() => {
+		const u = $user;
+		if (u) spendEnabled = u.spendingEnabled === true;
+	});
+
+	async function toggleSpending(e: Event): Promise<void> {
+		const el = e.currentTarget as HTMLInputElement;
+		const enabled = el.checked;
+		spendBusy = true;
+		spendEnabled = enabled;
+		try {
+			await api('/api/profile', { method: 'PATCH', body: { spendingEnabled: enabled } });
+			user.update((u) => (u ? { ...u, spendingEnabled: enabled } : u));
+		} catch {
+			spendEnabled = !enabled;
+			el.checked = spendEnabled;
+		} finally {
+			spendBusy = false;
+		}
+	}
+
 	async function copyCode(): Promise<void> {
 		try {
 			await copyToClipboard(shareCode);
@@ -287,6 +311,24 @@
 			<span>
 				<b>Enable private ideas lists</b>
 				<span class="hint">Keep a private list of gift ideas for each person below their own wish list! Ideas shared by other users are always shown.</span>
+			</span>
+		</label>
+	</div>
+
+	<div class="card">
+		<h2 class="sect">Spending</h2>
+		<p class="muted">Keep track of what gifts actually cost you.</p>
+		<label class="event-row" for="spendingToggle">
+			<input
+				id="spendingToggle"
+				type="checkbox"
+				checked={spendEnabled}
+				disabled={spendBusy}
+				onchange={(e) => void toggleSpending(e)}
+			/>
+			<span>
+				<b>Track my spending</b>
+				<span class="hint">Add a private price to any gift you claim and see your running total at the top of your lists. Amounts are only ever visible to you.</span>
 			</span>
 		</label>
 	</div>

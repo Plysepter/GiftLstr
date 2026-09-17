@@ -775,6 +775,39 @@ func TestListsPaginationAndClaimedLabel(t *testing.T) {
 	}
 }
 
+func TestListsOrderedByBirthdayThenName(t *testing.T) {
+	me := seedUser(t, "c_order_me", "order_me", false)
+	seed := func(authID, username, birthday string) *user {
+		u := seedUser(t, authID, username, false)
+		if _, err := db.Exec(`UPDATE users SET birthday = ? WHERE id = ?`, birthday, u.ID); err != nil {
+			t.Fatalf("set birthday: %v", err)
+		}
+		connectUsers(t, me.ID, u.ID)
+		return u
+	}
+	zoe := seed("c_order_zoe", "zoe", "03-15")
+	adam := seed("c_order_adam", "adam", "03-15")
+	bob := seed("c_order_bob", "bob", "12-25")
+	nobday := seed("c_order_none", "nobday", "")
+	cara := seed("c_order_cara", "cara", "01-05")
+
+	w, resp := doJSON(t, me, http.MethodGet, "/api/lists", nil)
+	mustStatus(t, w, http.StatusOK)
+	got := []string{}
+	for _, raw := range resp["users"].([]any) {
+		got = append(got, raw.(map[string]any)["id"].(string))
+	}
+	want := []string{cara.ID, adam.ID, zoe.ID, bob.ID, nobday.ID}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d users, got %d (%v)", len(want), len(got), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("position %d = %s, want %s (order %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestArchiveAccessAndDetail(t *testing.T) {
 	u := seedUser(t, "c_archive", "archive_user", false)
 	listID := activeList(t, u.ID)
@@ -1102,5 +1135,269 @@ func TestDecodeRejectsOversizedBody(t *testing.T) {
 	var maxErr *http.MaxBytesError
 	if !errors.As(err, &maxErr) {
 		t.Errorf("error = %v, want *http.MaxBytesError", err)
+	}
+}
+
+func enableSpending(t *testing.T, u *user) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE users SET spending_enabled = 1 WHERE id = ?`, u.ID); err != nil {
+		t.Fatalf("enable spending: %v", err)
+	}
+}
+
+func TestProfileSpendingToggle(t *testing.T) {
+	u := seedUser(t, "c_spend_profile", "spend_profile", false)
+	if u.SpendingEnabled {
+		t.Fatal("spending should default to disabled")
+	}
+
+	w, resp := doJSON(t, u, http.MethodPatch, "/api/profile", body{"spendingEnabled": true})
+	mustStatus(t, w, http.StatusOK)
+	if resp["ok"] != true {
+		t.Errorf("expected ok response, got %v", resp)
+	}
+
+	_, me := doJSON(t, u, http.MethodGet, "/api/me", nil)
+	u2 := me["user"].(map[string]any)
+	if u2["spendingEnabled"] != true {
+		t.Errorf("expected spendingEnabled true after toggle, got %v", u2["spendingEnabled"])
+	}
+
+	w, _ = doJSON(t, u, http.MethodPatch, "/api/profile", body{"spendingEnabled": false})
+	mustStatus(t, w, http.StatusOK)
+	_, me = doJSON(t, u, http.MethodGet, "/api/me", nil)
+	u2 = me["user"].(map[string]any)
+	if u2["spendingEnabled"] != false {
+		t.Errorf("expected spendingEnabled false after untoggle, got %v", u2["spendingEnabled"])
+	}
+}
+
+func TestPriceIsPrivateAndGated(t *testing.T) {
+	owner := seedUser(t, "c_price_owner", "price_owner", false)
+	viewer := seedUser(t, "c_price_viewer", "price_viewer", false)
+	other := seedUser(t, "c_price_other", "price_other", false)
+	connectUsers(t, owner.ID, viewer.ID)
+	connectUsers(t, owner.ID, other.ID)
+
+	itemID := addItemRow(t, activeList(t, owner.ID), "Mug")
+	pricePath := fmt.Sprintf("/api/items/%s/price", itemID)
+
+	// Not enabled yet: price updates are rejected.
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", itemID), nil)
+	w, _ := doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 9.99})
+	mustStatus(t, w, http.StatusForbidden)
+
+	enableSpending(t, viewer)
+
+	// Enable a price on the claim.
+	w, resp := doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 12.34})
+	mustStatus(t, w, http.StatusOK)
+	if resp["mySpendCents"] != float64(1234) {
+		t.Errorf("mySpendCents = %v, want 1234", resp["mySpendCents"])
+	}
+	if resp["totalSpendCents"] != float64(1234) {
+		t.Errorf("totalSpendCents = %v, want 1234", resp["totalSpendCents"])
+	}
+
+	// The claimer sees their own price and this list's spend total on the list view.
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	if resp["totalSpendCents"] != float64(1234) {
+		t.Errorf("viewer totalSpendCents = %v, want 1234", resp["totalSpendCents"])
+	}
+	item := resp["items"].([]any)[0].(map[string]any)
+	if item["mySpendCents"] != float64(1234) {
+		t.Errorf("viewer mySpendCents = %v, want 1234", item["mySpendCents"])
+	}
+
+	// The owner (who holds no claim) sees nothing spend-related: spending is
+	// disabled for them, and even when enabled they are not the claimer.
+	w, resp = doJSON(t, owner, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	mustStatus(t, w, http.StatusOK)
+	if _, exposed := resp["totalSpendCents"]; exposed {
+		t.Error("owner list should not expose totalSpendCents when disabled")
+	}
+	item = resp["items"].([]any)[0].(map[string]any)
+	if _, exposed := item["mySpendCents"]; exposed {
+		t.Error("owner list should not expose mySpendCents when disabled")
+	}
+
+	// A connected, non-enabled viewer sees no spend data either; even enabled,
+	// they never hold the claim so the price stays hidden.
+	w, resp = doJSON(t, other, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	mustStatus(t, w, http.StatusOK)
+	if _, exposed := resp["totalSpendCents"]; exposed {
+		t.Error("non-enabled viewer should not get totalSpendCents")
+	}
+	item = resp["items"].([]any)[0].(map[string]any)
+	if _, exposed := item["mySpendCents"]; exposed {
+		t.Error("non-claimer should never see mySpendCents")
+	}
+	enableSpending(t, other)
+	w, resp = doJSON(t, other, http.MethodGet, fmt.Sprintf("/api/users/%s/list", owner.ID), nil)
+	mustStatus(t, w, http.StatusOK)
+	item = resp["items"].([]any)[0].(map[string]any)
+	if _, exposed := item["mySpendCents"]; exposed {
+		t.Error("enabled non-claimer must still never see mySpendCents")
+	}
+
+	// Clearing with 0 resets the price.
+	w, resp = doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 0})
+	mustStatus(t, w, http.StatusOK)
+	if resp["mySpendCents"] != float64(0) || resp["totalSpendCents"] != float64(0) {
+		t.Errorf("clearing price failed: %v", resp)
+	}
+
+	// After unclaiming, pricing is impossible.
+	doJSON(t, viewer, http.MethodDelete, fmt.Sprintf("/api/items/%s/claim", itemID), nil)
+	w, _ = doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 5.00})
+	mustStatus(t, w, http.StatusNotFound)
+
+	// Prices with more than two decimals are trimmed, never rounded.
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", itemID), nil)
+	w, resp = doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 12.345})
+	mustStatus(t, w, http.StatusOK)
+	if resp["mySpendCents"] != float64(1234) || resp["totalSpendCents"] != float64(1234) {
+		t.Errorf("sub-cent price should trim to 1234 cents, got %v", resp)
+	}
+	doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 0})
+	doJSON(t, viewer, http.MethodDelete, fmt.Sprintf("/api/items/%s/claim", itemID), nil)
+
+	// Negative and absurd prices are rejected.
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", itemID), nil)
+	w, _ = doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": -1})
+	mustStatus(t, w, http.StatusBadRequest)
+	w, _ = doJSON(t, viewer, http.MethodPatch, pricePath, body{"price": 2000000})
+	mustStatus(t, w, http.StatusBadRequest)
+}
+
+func TestListsPageSpend(t *testing.T) {
+	owner := seedUser(t, "c_lists_spend_owner", "lists_spend_owner", false)
+	viewer := seedUser(t, "c_lists_spend_viewer", "lists_spend_viewer", false)
+	connectUsers(t, owner.ID, viewer.ID)
+
+	listID := activeList(t, owner.ID)
+	itemA := addItemRow(t, listID, "A")
+	itemB := addItemRow(t, listID, "B")
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", itemA), nil)
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", itemB), nil)
+
+	// Disabled: no spend fields surface at all.
+	_, resp := doJSON(t, viewer, http.MethodGet, "/api/lists", nil)
+	if _, exposed := resp["totalSpendCents"]; exposed {
+		t.Error("totalSpendCents should not be present")
+	}
+	for _, raw := range resp["users"].([]any) {
+		if _, exposed := raw.(map[string]any)["spendCents"]; exposed {
+			t.Error("spendCents should be hidden when spending is disabled")
+		}
+	}
+
+	enableSpending(t, viewer)
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", itemA), body{"price": 10.00})
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", itemB), body{"price": 5.50})
+
+	// Per-user spend appears on the lists page.
+	_, resp = doJSON(t, viewer, http.MethodGet, "/api/lists", nil)
+	if _, present := resp["totalSpendCents"]; present {
+		t.Error("totalSpendCents should not be present on the lists page")
+	}
+	var entry map[string]any
+	for _, raw := range resp["users"].([]any) {
+		u := raw.(map[string]any)
+		if u["id"] == owner.ID {
+			entry = u
+		}
+	}
+	if entry == nil {
+		t.Fatal("owner not found on lists page")
+	}
+	if entry["spendCents"] != float64(1550) {
+		t.Errorf("owner spendCents = %v, want 1550", entry["spendCents"])
+	}
+	if entry["myClaims"] != float64(2) {
+		t.Errorf("owner myClaims = %v, want 2", entry["myClaims"])
+	}
+
+	// Once the owner's list gets archived, the per-user active-list spend drops
+	// away because there are no more active claims to show, while the list-view
+	// total (checked elsewhere) still counts all-time claims.
+	if _, err := db.Exec(`UPDATE lists SET archived_at = datetime('now') WHERE id = ?`, listID); err != nil {
+		t.Fatal(err)
+	}
+	_, resp = doJSON(t, viewer, http.MethodGet, "/api/lists", nil)
+	if _, present := resp["totalSpendCents"]; present {
+		t.Error("totalSpendCents should not be present on the lists page")
+	}
+	var archivedEntry map[string]any
+	for _, raw := range resp["users"].([]any) {
+		u := raw.(map[string]any)
+		if u["id"] == owner.ID {
+			archivedEntry = u
+		}
+	}
+	if archivedEntry["myClaims"] != float64(0) {
+		t.Errorf("archived list myClaims = %v, want 0", archivedEntry["myClaims"])
+	}
+	if _, exposed := archivedEntry["spendCents"]; exposed {
+		t.Error("spendCents should vanish when the active list has no claims")
+	}
+}
+
+func TestListSpendIsPerList(t *testing.T) {
+	alice := seedUser(t, "c_list_spend_a", "list_spend_a", false)
+	bob := seedUser(t, "c_list_spend_b", "list_spend_b", false)
+	viewer := seedUser(t, "c_list_spend_v", "list_spend_v", false)
+	connectUsers(t, alice.ID, viewer.ID)
+	connectUsers(t, bob.ID, viewer.ID)
+	enableSpending(t, viewer)
+
+	// Alice's list: items at $20 and $30 = $50 total.
+	aliceList := activeList(t, alice.ID)
+	aliceA := addItemRow(t, aliceList, "Alice item A")
+	aliceB := addItemRow(t, aliceList, "Alice item B")
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", aliceA), nil)
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", aliceB), nil)
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", aliceA), body{"price": 20.00})
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", aliceB), body{"price": 30.00})
+
+	// Bob's list: items at $40 and $40 = $80 total.
+	bobList := activeList(t, bob.ID)
+	bobC := addItemRow(t, bobList, "Bob item C")
+	bobD := addItemRow(t, bobList, "Bob item D")
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", bobC), nil)
+	doJSON(t, viewer, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", bobD), nil)
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", bobC), body{"price": 40.00})
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", bobD), body{"price": 40.00})
+
+	// Each list view shows only its own spend, never the global total.
+	_, resp := doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", alice.ID), nil)
+	if resp["totalSpendCents"] != float64(5000) {
+		t.Errorf("alice list totalSpendCents = %v, want 5000", resp["totalSpendCents"])
+	}
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", bob.ID), nil)
+	if resp["totalSpendCents"] != float64(8000) {
+		t.Errorf("bob list totalSpendCents = %v, want 8000", resp["totalSpendCents"])
+	}
+
+	// Clearing one price on Alice's list only changes her list's total.
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", aliceA), body{"price": 0})
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", alice.ID), nil)
+	if resp["totalSpendCents"] != float64(3000) {
+		t.Errorf("alice list totalSpendCents after clear = %v, want 3000", resp["totalSpendCents"])
+	}
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", bob.ID), nil)
+	if resp["totalSpendCents"] != float64(8000) {
+		t.Errorf("bob list totalSpendCents must stay 8000, got %v", resp["totalSpendCents"])
+	}
+
+	// Setting a price on Bob's list leaves Alice's untouched.
+	doJSON(t, viewer, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", bobC), body{"price": 75.00})
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", bob.ID), nil)
+	if resp["totalSpendCents"] != float64(11500) {
+		t.Errorf("bob list totalSpendCents after raise = %v, want 11500", resp["totalSpendCents"])
+	}
+	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", alice.ID), nil)
+	if resp["totalSpendCents"] != float64(3000) {
+		t.Errorf("alice list totalSpendCents must stay 3000, got %v", resp["totalSpendCents"])
 	}
 }

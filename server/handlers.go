@@ -71,6 +71,7 @@ func registerAPI(mux *http.ServeMux) {
 
 	mux.HandleFunc("PUT /api/items/{id}/claim", rl.rateLimit(auth(handleClaim)))
 	mux.HandleFunc("DELETE /api/items/{id}/claim", rl.rateLimit(auth(handleUnclaim)))
+	mux.HandleFunc("PATCH /api/items/{id}/price", rl.rateLimit(auth(handleSetPrice)))
 
 	mux.HandleFunc("GET /api/archive", rl.rateLimit(auth(handleArchiveIndex)))
 	mux.HandleFunc("GET /api/archive/{id}", rl.rateLimit(auth(handleArchiveList)))
@@ -242,13 +243,14 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 		ThemeStyle       *string `json:"themeStyle"`
 		HolidayReset     *string `json:"holidayReset"`
 		AllowSuggestions *bool   `json:"allowSuggestions"`
+		SpendingEnabled  *bool   `json:"spendingEnabled"`
 	}
 	if err := decode(w, r, &req); err != nil {
 		fail(w, 400, "bad request")
 		return
 	}
-	if req.Birthday == nil && req.ThemeStyle == nil && req.HolidayReset == nil && req.AllowSuggestions == nil {
-		fail(w, 400, "birthday, themeStyle, holidayReset or allowSuggestions required")
+	if req.Birthday == nil && req.ThemeStyle == nil && req.HolidayReset == nil && req.AllowSuggestions == nil && req.SpendingEnabled == nil {
+		fail(w, 400, "birthday, themeStyle, holidayReset, allowSuggestions or spendingEnabled required")
 		return
 	}
 	if req.Birthday != nil {
@@ -298,6 +300,17 @@ func handleProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.SpendingEnabled != nil {
+		enabled := 0
+		if *req.SpendingEnabled {
+			enabled = 1
+		}
+		if _, err := db.Exec(`UPDATE users SET spending_enabled = ? WHERE id = ?`, enabled, u.ID); err != nil {
+			log.Printf("update spending_enabled: %v", err)
+			fail(w, 500, "update failed")
+			return
+		}
+	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -316,6 +329,7 @@ type listItem struct {
 	SuggestedBy   string  `json:"suggestedBy,omitempty"`
 	SuggestedByMe bool    `json:"suggestedByMe"`
 	suggestedByID string  // not serialized
+	MySpendCents  *int    `json:"mySpendCents,omitempty"`
 }
 
 func itemRows(where string, args ...any) ([]listItem, error) {
@@ -362,11 +376,23 @@ type listOwner struct {
 	ThemeStyle   string `json:"themeStyle"`
 }
 
+// listTotalSpend sums the viewer's private price_cents across the active
+// (non-removed) items of exactly one list, so the header figure on a list
+// view always matches the items on screen and never spend on other lists.
+func listTotalSpend(listID, viewerID string) (int, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COALESCE(SUM(c.price_cents), 0) FROM claims c JOIN items i ON i.id = c.item_id WHERE i.list_id = ? AND i.removed_at IS NULL AND c.user_id = ?`, listID, viewerID).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 type userListResponse struct {
-	User         listOwner  `json:"user"`
-	Items        []listItem `json:"items"`
-	PrivateItems []listItem `json:"privateItems,omitempty"`
-	IsOwner      bool       `json:"isOwner"`
+	User            listOwner  `json:"user"`
+	Items           []listItem `json:"items"`
+	PrivateItems    []listItem `json:"privateItems,omitempty"`
+	IsOwner         bool       `json:"isOwner"`
+	TotalSpendCents *int       `json:"totalSpendCents,omitempty"`
 }
 
 func handleUserList(w http.ResponseWriter, r *http.Request) {
@@ -427,6 +453,44 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Prices are private to the claimer: only ever the viewer's own spend is
+	// attached, and only when the viewer has spending tracking enabled.
+	var totalSpend *int
+	if viewer.SpendingEnabled {
+		total, err := listTotalSpend(listID, viewer.ID)
+		if err != nil {
+			fail(w, 500, "query error")
+			return
+		}
+		totalSpend = &total
+		rows, err := db.Query(`SELECT c.item_id, c.price_cents FROM claims c JOIN items i ON i.id = c.item_id WHERE i.list_id = ? AND c.user_id = ?`, listID, viewer.ID)
+		if err != nil {
+			fail(w, 500, "query error")
+			return
+		}
+		spend := map[string]int{}
+		for rows.Next() {
+			var itemID string
+			var cents int
+			if rows.Scan(&itemID, &cents) == nil {
+				spend[itemID] = cents
+			}
+		}
+		rows.Close()
+		for i := range items {
+			if cents, ok := spend[items[i].ID]; ok {
+				c := cents
+				items[i].MySpendCents = &c
+			}
+		}
+		for i := range privateItems {
+			if cents, ok := spend[privateItems[i].ID]; ok {
+				c := cents
+				privateItems[i].MySpendCents = &c
+			}
+		}
+	}
+
 	// Admins may opt into seeing who claimed items on a live list they are
 	// viewing; everyone else (and admins by default) keeps claimers hidden.
 	revealClaimers := viewer.IsAdmin && r.URL.Query().Get("revealClaimers") == "1"
@@ -458,7 +522,7 @@ func handleUserList(w http.ResponseWriter, r *http.Request) {
 		}
 		it.ClaimedUserID = ""
 	}
-	writeJSON(w, 200, userListResponse{User: owner, Items: items, PrivateItems: privateItems, IsOwner: isOwner})
+	writeJSON(w, 200, userListResponse{User: owner, Items: items, PrivateItems: privateItems, IsOwner: isOwner, TotalSpendCents: totalSpend})
 }
 
 type listEntry struct {
@@ -470,6 +534,7 @@ type listEntry struct {
 	Connected    bool   `json:"connected"`
 	CanView      bool   `json:"canView"`
 	ClaimedLabel string `json:"claimedLabel"`
+	SpendCents   *int   `json:"spendCents,omitempty"`
 }
 
 type listsResponse struct {
@@ -502,17 +567,21 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 			SELECT u.id, u.display_name, u.username, u.birthday,
 				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
 				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
+				(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
+				 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
 				(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?))
-			FROM users u WHERE u.id != ? ORDER BY u.display_name LIMIT ? OFFSET ?`,
-			viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
+			FROM users u WHERE u.id != ? ORDER BY CASE WHEN u.birthday = '' THEN 1 ELSE 0 END, u.birthday, u.display_name LIMIT ? OFFSET ?`,
+			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
 	} else {
 		rows, err = db.Query(`
 			SELECT u.id, u.display_name, u.username, u.birthday,
 				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
 				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
+				(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
+				 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
 				(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?))
-			FROM users u WHERE u.id != ? AND EXISTS(SELECT 1 FROM connections c2 WHERE (c2.user_id = ? AND c2.other_user_id = u.id) OR (c2.user_id = u.id AND c2.other_user_id = ?)) ORDER BY u.display_name LIMIT ? OFFSET ?`,
-			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
+			FROM users u WHERE u.id != ? AND EXISTS(SELECT 1 FROM connections c2 WHERE (c2.user_id = ? AND c2.other_user_id = u.id) OR (c2.user_id = u.id AND c2.other_user_id = ?)) ORDER BY CASE WHEN u.birthday = '' THEN 1 ELSE 0 END, u.birthday, u.display_name LIMIT ? OFFSET ?`,
+			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
 	}
 	if err != nil {
 		fail(w, 500, "query error")
@@ -522,8 +591,8 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 	users := []listEntry{}
 	for rows.Next() {
 		var e listEntry
-		var claims, connected int
-		if err := rows.Scan(&e.ID, &e.DisplayName, &e.Username, &e.Birthday, &claims, &connected); err != nil {
+		var claims, connected, spend int
+		if err := rows.Scan(&e.ID, &e.DisplayName, &e.Username, &e.Birthday, &claims, &spend, &connected); err != nil {
 			continue
 		}
 		e.Connected = connected > 0
@@ -531,9 +600,14 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 		e.CanView = viewer.IsAdmin || e.Connected
 		if claims > 0 {
 			e.ClaimedLabel = "claimed " + strconv.Itoa(claims) + " items"
+			if viewer.SpendingEnabled {
+				s := spend
+				e.SpendCents = &s
+			}
 		}
 		users = append(users, e)
 	}
+
 	writeJSON(w, 200, listsResponse{Users: users, Page: page, HasMore: page*per < total, Total: total})
 }
 
@@ -1240,6 +1314,55 @@ func handleUnclaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleSetPrice records the viewer's private price on an item they currently
+// hold a claim for. Prices are stored as integer cents and never exposed to
+// anyone but the claimer. Requires spending tracking to be enabled.
+func handleSetPrice(w http.ResponseWriter, r *http.Request) {
+	itemID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	viewer := userFrom(r)
+	if !viewer.SpendingEnabled {
+		fail(w, 403, "spending tracking is disabled")
+		return
+	}
+	var req struct {
+		Price *float64 `json:"price"`
+	}
+	if err := decode(w, r, &req); err != nil || req.Price == nil {
+		fail(w, 400, "price required")
+		return
+	}
+	if *req.Price < 0 || *req.Price > 1_000_000 {
+		fail(w, 400, "invalid price")
+		return
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT 1 FROM claims WHERE item_id = ? AND user_id = ?`, itemID, viewer.ID).Scan(&exists); err != nil {
+		fail(w, 404, "you have not claimed this item")
+		return
+	}
+	cents := int(*req.Price * 100)
+	if _, err := db.Exec(`UPDATE claims SET price_cents = ? WHERE item_id = ? AND user_id = ?`, cents, itemID, viewer.ID); err != nil {
+		log.Printf("update price: %v", err)
+		fail(w, 500, "update failed")
+		return
+	}
+	var listID string
+	if err := db.QueryRow(`SELECT list_id FROM items WHERE id = ?`, itemID).Scan(&listID); err != nil {
+		fail(w, 500, "query error")
+		return
+	}
+	total, err := listTotalSpend(listID, viewer.ID)
+	if err != nil {
+		fail(w, 500, "query error")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "mySpendCents": cents, "totalSpendCents": total})
 }
 
 // ---------- archive ----------

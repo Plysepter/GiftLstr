@@ -517,3 +517,115 @@ describe("UserList copy to clipboard", () => {
     expect(screen.queryByText("nope")).not.toBeNull();
   });
 });
+
+describe("UserList spending tracking", () => {
+  function spendResponse(): UserListResponse {
+    return {
+      user: OWNER,
+      items: [
+        mkItem({ id: "i1", title: "Mug", claimed: true, claimedByMe: true, mySpendCents: 1234 }),
+      ],
+      isOwner: false,
+      totalSpendCents: 1234,
+    };
+  }
+
+  it("shows just the amount in the pill and a prefilled price input on my claimed items when enabled", async () => {
+    mocks.userStore.set({ ...ADA, spendingEnabled: true });
+    mocks.api.mockImplementation(() => Promise.resolve(spendResponse()));
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(screen.queryByText("Spent:")).toBeNull();
+    expect(screen.getByText("$12.34")).toBeTruthy();
+    const price = screen.getByLabelText("Price for Mug") as HTMLInputElement;
+    expect(price.value).toBe("12.34");
+  });
+
+  it("PATCHes /api/items/{id}/price when a price is entered", async () => {
+    mocks.userStore.set({ ...ADA, spendingEnabled: true });
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("/price")
+          ? { ok: true, mySpendCents: 1234, totalSpendCents: 1234 }
+          : spendResponse(),
+      ),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    const price = screen.getByLabelText("Price for Mug") as HTMLInputElement;
+    fireEvent.change(price, { target: { value: "12.34" } });
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/items/i1/price", {
+      method: "PATCH",
+      body: { price: 12.34 },
+    });
+  });
+
+  it("trims input past two decimals when sending the price", async () => {
+    mocks.userStore.set({ ...ADA, spendingEnabled: true });
+    mocks.api.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("/price")
+          ? { ok: true, mySpendCents: 1234, totalSpendCents: 1234 }
+          : spendResponse(),
+      ),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    const price = screen.getByLabelText("Price for Mug") as HTMLInputElement;
+    fireEvent.change(price, { target: { value: "12.345" } });
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/items/i1/price", {
+      method: "PATCH",
+      body: { price: 12.34 },
+    });
+  });
+
+  it("rejects an invalid price with an error message and no request", async () => {
+    mocks.userStore.set({ ...ADA, spendingEnabled: true });
+    mocks.api.mockImplementation(() => Promise.resolve(spendResponse()));
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    const price = screen.getByLabelText("Price for Mug") as HTMLInputElement;
+    fireEvent.change(price, { target: { value: "not-a-price" } });
+    await flush();
+
+    expect(screen.getByRole("alert").textContent).toMatch(/Enter a valid price/);
+    const priceCalls = mocks.api.mock.calls.filter((c) => c[0].includes("/price"));
+    expect(priceCalls.length).toBe(0);
+  });
+
+  it("hides the price input when the viewer did not claim the item", async () => {
+    mocks.userStore.set({ ...ADA, spendingEnabled: true });
+    mocks.api.mockImplementation(() =>
+      Promise.resolve({
+        user: OWNER,
+        items: [mkItem({ id: "i1", title: "Mug", claimed: true, claimedByMe: false })],
+        isOwner: false,
+        totalSpendCents: 0,
+      }),
+    );
+    render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(screen.queryByLabelText("Price for Mug")).toBeNull();
+    expect(screen.getByText("$0.00")).toBeTruthy();
+  });
+
+  it("shows no spending UI when spending tracking is disabled", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(spendResponse()));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    expect(container.querySelector(".spend-pill")).toBeNull();
+    expect(screen.queryByText("$0.00")).toBeNull();
+    expect(screen.queryByLabelText("Price for Mug")).toBeNull();
+  });
+});

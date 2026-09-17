@@ -3,6 +3,7 @@
 	import { user } from '../lib/auth.js';
 	import type { Item, UserListResponse } from '../lib/types.js';
 	import { normalizeItemURL } from '../lib/types.js';
+	import { formatMoney, centsToDollars, dollarsToCents } from '../lib/money.js';
 	import LinkPreview from '../lib/LinkPreview.svelte';
 	import ItemTile from '../lib/ItemTile.svelte';
 	import EmptyState from '../lib/EmptyState.svelte';
@@ -42,6 +43,28 @@
 	const canHover = matchMedia('(hover: hover) and (pointer: fine)').matches;
 
 	const canAddPrivate = $derived(data !== null && !data.isOwner && $user?.allowSuggestions !== false);
+
+	const spendingOn = $derived($user?.spendingEnabled === true);
+
+	let priceError = $state('');
+
+	async function setPrice(item: Item, raw: string): Promise<void> {
+		priceError = '';
+		const cents = dollarsToCents(raw);
+		if (cents === null) {
+			priceError = 'Enter a valid price, e.g. 12.34';
+			return;
+		}
+		try {
+			await api<{ mySpendCents: number; totalSpendCents: number }>(`/api/items/${item.id}/price`, {
+				method: 'PATCH',
+				body: { price: cents / 100 }
+			});
+			await load();
+		} catch (err) {
+			priceError = err instanceof Error ? err.message : String(err);
+		}
+	}
 
 	let privateIdeas = $derived(data?.privateItems ?? []);
 
@@ -349,6 +372,11 @@
 					<b>{ownerSeason.days}</b>d till {ownerSeason.label || 'their next reset'}
 				</span>
 			{/if}
+			{#if spendingOn && data?.totalSpendCents !== undefined}
+				<span class="pill spend-pill" title="Your private spend on the active items in this list">
+					<b>{formatMoney(data.totalSpendCents)}</b>
+				</span>
+			{/if}
 			{#if data}
 				<button class="pill copy-btn" class:copied type="button" onclick={() => void copyList()} aria-label="Copy list to clipboard">
 					<Icon name={copied ? 'check' : 'copy'} size={14} />
@@ -381,6 +409,9 @@
 			<button class="ghost" type="button" onclick={() => void syncNow()}>Try sync now</button>
 		</div>
 	{/if}
+	{#if priceError}
+		<p class="error price-error" role="alert">{priceError}</p>
+	{/if}
 
 <ul class="items">
 		{#each selfAuthored as item (item.id)}
@@ -412,6 +443,22 @@
 							<span class="badge claimed claim-owner-badge">claimed by {item.claimedByName}</span>
 						{/if}
 						{#if item.removedAt}<span class="badge warn removed-badge">removed by owner</span>{/if}
+						{#if spendingOn && item.claimedByMe}
+							<div class="price-row">
+								<span class="price-lbl">Spent</span>
+								<input
+									class="price-input"
+									inputmode="decimal"
+									placeholder="$0.00"
+									value={centsToDollars(item.mySpendCents ?? 0)}
+									aria-label={`Price for ${item.title}`}
+									onchange={(e) => void setPrice(item, (e.currentTarget as HTMLInputElement).value)}
+									onkeydown={(e) => {
+										if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+									}}
+								/>
+							</div>
+						{/if}
 					</div>
 				</article>
 			</li>
@@ -449,6 +496,22 @@
 						<div class="body">
 							{#if item.url}<LinkPreview url={item.url} />{/if}
 							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
+							{#if spendingOn && item.claimedByMe}
+								<div class="price-row">
+									<span class="price-lbl">Spent</span>
+									<input
+										class="price-input"
+										inputmode="decimal"
+										placeholder="$0.00"
+										value={centsToDollars(item.mySpendCents ?? 0)}
+										aria-label={`Price for ${item.title}`}
+										onchange={(e) => void setPrice(item, (e.currentTarget as HTMLInputElement).value)}
+										onkeydown={(e) => {
+											if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+										}}
+									/>
+								</div>
+							{/if}
 						</div>
 						<div class="actions secondary-actions">
 							{#if item.suggestedBy}
@@ -516,6 +579,22 @@
 							{#if item.notes}<p class="notes"><span>{item.notes}</span></p>{/if}
 							{#if item.claimedByMe}
 								<span class="badge claimed">your pick</span>
+							{/if}
+							{#if spendingOn && item.claimedByMe}
+								<div class="price-row">
+									<span class="price-lbl">Spent</span>
+									<input
+										class="price-input"
+										inputmode="decimal"
+										placeholder="$0.00"
+										value={centsToDollars(item.mySpendCents ?? 0)}
+										aria-label={`Price for ${item.title}`}
+										onchange={(e) => void setPrice(item, (e.currentTarget as HTMLInputElement).value)}
+										onkeydown={(e) => {
+											if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+										}}
+									/>
+								</div>
 							{/if}
 						</div>
 						<div class="actions secondary-actions">
@@ -789,6 +868,42 @@
 			margin: 0 calc(50% - var(--nav-side) / 2 - 320px) 0 calc(50% + var(--nav-side) / 2 - 320px);
 			bottom: var(--kb, 0px);
 			border-radius: var(--radius) var(--radius) 0 0;
+		}
+	}
+
+	.spend-pill {
+		color: var(--acc-ink);
+	}
+	.price-error {
+		margin: 0.65rem 0;
+	}
+	.price-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.65rem;
+	}
+	.price-lbl {
+		font-size: 0.72rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--muted);
+		flex-shrink: 0;
+	}
+	.price-input {
+		width: 6.5rem;
+		padding: 0.35rem 0.6rem;
+		border-radius: 10px;
+		background: color-mix(in srgb, var(--solid) 35%, transparent);
+		font-variant-numeric: tabular-nums;
+	}
+	@media (prefers-reduced-motion: no-preference) {
+		.price-input {
+			transition:
+				border-color 0.16s ease,
+				box-shadow 0.25s ease,
+				background-color 0.45s ease;
 		}
 	}
 </style>

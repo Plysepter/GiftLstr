@@ -4,13 +4,41 @@ import ListsPage from "./ListsPage.svelte";
 import type { ListsPageResponse, ListsPageUser } from "../lib/types.js";
 
 const mocks = vi.hoisted(() => {
+  type Cb = (v: unknown) => void;
+  function store(init: unknown) {
+    let value: unknown = init;
+    const subs = new Set<Cb>();
+    return {
+      value,
+      subscribe(cb: Cb): () => void {
+        cb(value);
+        subs.add(cb);
+        return () => {
+          subs.delete(cb);
+        };
+      },
+      set(next: unknown): void {
+        value = next;
+        this.value = value;
+        for (const cb of subs) cb(value);
+      },
+      update(fn: (v: unknown) => unknown): void {
+        this.set(fn(value));
+      },
+    };
+  }
   return {
     api: vi.fn(),
     network: { offline: false },
+    userStore: store(null),
   };
 });
 
 vi.mock("../lib/api.js", () => ({ api: mocks.api }));
+vi.mock("../lib/auth.js", () => ({
+  user: mocks.userStore,
+  loaded: { subscribe: () => () => {} },
+}));
 vi.mock("../lib/offlineQueue.js", () => ({ isOfflineError: () => false }));
 vi.mock("../lib/network.svelte.js", () => ({ network: mocks.network }));
 
@@ -23,6 +51,7 @@ const ALICE: ListsPageUser = {
   connected: true,
   canView: true,
   claimedLabel: "",
+  spendCents: 1550,
 };
 const BOB: ListsPageUser = {
   id: "u2",
@@ -46,10 +75,65 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   mocks.api.mockReset();
   mocks.network.offline = false;
+  mocks.userStore.set(null);
 });
 
 afterEach(() => {
   cleanup();
+  mocks.userStore.set(null);
+});
+
+describe("ListsPage per-user spend", () => {
+  function spendingResponse(): ListsPageResponse {
+    return response([ALICE, BOB]);
+  }
+
+  function renderSpending(enabled: boolean, users: ListsPageUser[] = [ALICE, BOB]) {
+    mocks.userStore.set({
+      id: "u9",
+      username: "me",
+      displayName: "Me",
+      isAdmin: false,
+      birthday: "",
+      spendingEnabled: enabled,
+    });
+    mocks.api.mockResolvedValue({ ...spendingResponse(), users });
+    return render(ListsPage);
+  }
+
+  it("shows each user's spend on their card when spending is enabled", async () => {
+    const { container } = renderSpending(true);
+    await flush();
+
+    const spend = container.querySelector(".spend-amt");
+    expect(spend?.textContent).toBe("$15.50");
+  });
+
+  it("hides per-user spend when spending is disabled", async () => {
+    mocks.userStore.set({
+      id: "u9",
+      username: "me",
+      displayName: "Me",
+      isAdmin: false,
+      birthday: "",
+      spendingEnabled: false,
+    });
+    mocks.api.mockResolvedValue(spendingResponse());
+    const { container } = render(ListsPage);
+    await flush();
+
+    expect(container.querySelector(".spend-amt")).toBeNull();
+    expect(screen.queryByText("Spent on gifts:")).toBeNull();
+  });
+
+  it("hides per-user spend when the viewer spent nothing there", async () => {
+    const { spendCents: _spend, ...aliceWithoutSpend } = ALICE;
+    const noSpend = [aliceWithoutSpend, BOB];
+    const { container } = renderSpending(true, noSpend);
+    await flush();
+
+    expect(container.querySelector(".spend-amt")).toBeNull();
+  });
 });
 
 describe("ListsPage share-code connect", () => {

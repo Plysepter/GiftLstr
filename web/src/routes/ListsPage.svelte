@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { api } from '../lib/api.js';
+	import { user } from '../lib/auth.js';
 	import type { ListsPageResponse } from '../lib/types.js';
+	import { formatMoney } from '../lib/money.js';
 	import PageHeader from '../lib/PageHeader.svelte';
 	import EmptyState from '../lib/EmptyState.svelte';
 	import ErrorState from '../lib/ErrorState.svelte';
@@ -40,6 +42,8 @@
 		page = p;
 		void load();
 	}
+
+	const spendingOn = $derived($user?.spendingEnabled === true);
 
 	let shareCode = $state('');
 	let connectBtnEl: HTMLButtonElement | undefined = $state();
@@ -85,6 +89,11 @@
 					{#if u.birthday} · {/if}
 					{u.myClaims} claimed
 				</span>
+				{#if spendingOn && u.spendCents !== undefined}
+					<span class="meta muted">
+						<b class="spend-amt">{formatMoney(u.spendCents)}</b>
+					</span>
+				{/if}
 			</div>
 			<a href={`#/list/${u.id}`}><button class="secondary">View list</button></a>
 		</div>
@@ -151,6 +160,10 @@
 	}
 	.meta {
 		font-size: 0.85rem;
+	}
+	.spend-amt {
+		color: var(--acc-ink);
+		font-variant-numeric: tabular-nums;
 	}
 	.pager {
 		display: flex;

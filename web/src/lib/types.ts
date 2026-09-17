@@ -13,6 +13,8 @@ export interface User {
   holidayReset?: string;
   /** Whether connected users can add suggested items to your list. Default true. */
   allowSuggestions?: boolean;
+  /** Whether the user can attach private prices to claimed gifts. Default false. */
+  spendingEnabled?: boolean;
 }
 
 export interface Item {
@@ -29,6 +31,11 @@ export interface Item {
   suggestedBy?: string;
   /** True when the current viewer authored this shared idea (can retract it). */
   suggestedByMe?: boolean;
+  /**
+   * The viewer's private price on this item in cents. Only present for items
+   * the viewer holds a claim on and when spending tracking is enabled.
+   */
+  mySpendCents?: number;
 }
 
 export interface UserListResponse {
@@ -40,6 +47,11 @@ export interface UserListResponse {
    */
   privateItems?: Item[];
   isOwner: boolean;
+  /**
+   * The viewer's private spend in cents on the active items of exactly this
+   * list. Only present when spending tracking is enabled.
+   */
+  totalSpendCents?: number;
 }
 
 export interface ListsPageUser {
@@ -51,6 +63,12 @@ export interface ListsPageUser {
   connected: boolean;
   canView: boolean;
   claimedLabel: string;
+  /**
+   * The viewer's private spend in cents on this user's active list. Only
+   * present when the viewer has claimed something and spending tracking is
+   * enabled.
+   */
+  spendCents?: number;
 }
 
 export interface ListsPageResponse {

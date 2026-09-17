@@ -266,6 +266,43 @@ describe("Reset holiday", () => {
   });
 });
 
+describe("Spending", () => {
+  it("is off by default and enables via PATCH", async () => {
+    mocks.api.mockResolvedValue({});
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#spendingToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    await flush();
+    expect(mocks.api).toHaveBeenCalledWith("/api/profile", {
+      method: "PATCH",
+      body: { spendingEnabled: true },
+    });
+    expect(((mocks.userStore as { value: unknown }).value as User | null)?.spendingEnabled).toBe(
+      true,
+    );
+  });
+
+  it("reflects an enabled spending setting", async () => {
+    mocks.userStore.set({ ...ALICE, spendingEnabled: true });
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#spendingToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+  });
+
+  it("reverts the checkbox when the PATCH fails", async () => {
+    mocks.api.mockRejectedValue(new Error("boom"));
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#spendingToggle") as HTMLInputElement;
+    fireEvent.click(toggle);
+    await flush();
+    expect(toggle.checked).toBe(false);
+  });
+});
+
 describe("Suggestions", () => {
   it("allows suggestions by default and disables them via PATCH", async () => {
     mocks.api.mockResolvedValue({});

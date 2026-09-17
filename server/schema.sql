@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS users (
 	birthday TEXT NOT NULL DEFAULT '',
 	holiday_reset TEXT NOT NULL DEFAULT '',
 	allow_suggestions INTEGER NOT NULL DEFAULT 1,
+	spending_enabled INTEGER NOT NULL DEFAULT 0,
 	theme_style TEXT NOT NULL DEFAULT 'aurora',
 	share_code TEXT NOT NULL DEFAULT '',
 	created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS items (
 CREATE TABLE IF NOT EXISTS claims (
 	item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
 	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	price_cents INTEGER NOT NULL DEFAULT 0,
 	claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

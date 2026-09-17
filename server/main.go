@@ -91,6 +91,8 @@ func main() {
 		`ALTER TABLE items ADD COLUMN created_by_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN holiday_reset TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE users ADD COLUMN spending_enabled INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE claims ADD COLUMN price_cents INTEGER NOT NULL DEFAULT 0`,
 	} {
 		db.Exec(m) // ignore "duplicate column" errors
 	}
@@ -306,6 +308,7 @@ type user struct {
 	Birthday         string `json:"birthday"`
 	HolidayReset     string `json:"holidayReset"`
 	AllowSuggestions bool   `json:"allowSuggestions"`
+	SpendingEnabled  bool   `json:"spendingEnabled"`
 	ThemeStyle       string `json:"themeStyle"`
 	ShareCode        string `json:"shareCode"`
 	IsNew            bool   `json:"isNew,omitempty"`
@@ -314,7 +317,7 @@ type user struct {
 func scanUser(row *sql.Row) (*user, error) {
 	var u user
 	var theme sql.NullString
-	err := row.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &u.HolidayReset, &u.AllowSuggestions, &theme, &u.ShareCode)
+	err := row.Scan(&u.ID, &u.AuthUserID, &u.Username, &u.DisplayName, &u.IsAdmin, &u.Birthday, &u.HolidayReset, &u.AllowSuggestions, &u.SpendingEnabled, &theme, &u.ShareCode)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +329,7 @@ func scanUser(row *sql.Row) (*user, error) {
 	return &u, nil
 }
 
-const userCols = `id, auth_user_id, username, display_name, is_admin, birthday, holiday_reset, allow_suggestions, theme_style, share_code`
+const userCols = `id, auth_user_id, username, display_name, is_admin, birthday, holiday_reset, allow_suggestions, spending_enabled, theme_style, share_code`
 
 func getSessionToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -380,7 +383,7 @@ func insertUserAndList(authID, username, displayName string, isAdmin bool, birth
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, HolidayReset: "", AllowSuggestions: true, ThemeStyle: "aurora", ShareCode: "", IsNew: true}, nil
+	return &user{ID: uid, AuthUserID: authID, Username: username, DisplayName: displayName, IsAdmin: isAdmin, Birthday: birthday, HolidayReset: "", AllowSuggestions: true, SpendingEnabled: false, ThemeStyle: "aurora", ShareCode: "", IsNew: true}, nil
 }
 
 // provisionUser creates the local user row and active list on first login.
