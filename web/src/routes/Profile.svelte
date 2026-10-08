@@ -13,7 +13,7 @@
 		{ value: 'aurora', label: 'Aurora' },
 		{ value: 'kinetic', label: 'Kinetic'},
 		{ value: 'twilight', label: 'Twilight' },
-		{ value: 'oceanic', label: 'oceanicic' },
+		{ value: 'oceanic', label: 'Oceanicic' },
 		{ value: 'forest', label: 'Forest' },
 		{ value: 'faerie', label: 'Faerie' },
 		{ value: 'daisies', label: 'Daisies' },
