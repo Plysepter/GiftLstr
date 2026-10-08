@@ -18,7 +18,12 @@ CREATE TABLE IF NOT EXISTS lists (
 	user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	label TEXT NOT NULL,
 	archived_at TEXT,
-	created_at TEXT NOT NULL DEFAULT (datetime('now'))
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	is_private INTEGER NOT NULL DEFAULT 0,
+	first_name TEXT NOT NULL DEFAULT '',
+	last_name TEXT NOT NULL DEFAULT '',
+	birthday TEXT NOT NULL DEFAULT '',
+	theme TEXT NOT NULL DEFAULT 'aurora'
 );
 
 CREATE TABLE IF NOT EXISTS items (

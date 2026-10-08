@@ -93,6 +93,10 @@ func main() {
 		`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE users ADD COLUMN spending_enabled INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE claims ADD COLUMN price_cents INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE lists ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE lists ADD COLUMN first_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE lists ADD COLUMN last_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE lists ADD COLUMN birthday TEXT NOT NULL DEFAULT ''`,
 	} {
 		db.Exec(m) // ignore "duplicate column" errors
 	}
@@ -467,14 +471,17 @@ func canView(viewerID string, viewerAdmin bool, ownerID string) bool {
 	return ok
 }
 
+// activeListID returns the user's ordinary (non-private) active list,
+// creating it if missing. Private lists never qualify: each one is addressed
+// explicitly by id, so they must not hijack the implicit "active list".
 func activeListID(userID string) (string, error) {
 	var id string
-	err := db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND archived_at IS NULL ORDER BY id DESC LIMIT 1`, userID).Scan(&id)
+	err := db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND is_private = 0 AND archived_at IS NULL ORDER BY id DESC LIMIT 1`, userID).Scan(&id)
 	if err == sql.ErrNoRows {
 		if _, err2 := db.Exec(`INSERT INTO lists (id, user_id, label) VALUES (?, ?, 'Active')`, newID(), userID); err2 != nil {
 			return "", err2
 		}
-		return id, db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND archived_at IS NULL LIMIT 1`, userID).Scan(&id)
+		return id, db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND is_private = 0 AND archived_at IS NULL ORDER BY id DESC LIMIT 1`, userID).Scan(&id)
 	}
 	return id, err
 }

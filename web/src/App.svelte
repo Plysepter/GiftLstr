@@ -81,6 +81,8 @@
 						<LazyRoute load={() => import('./routes/MyList.svelte')} />
 					{:else if parsed.name === 'userList'}
 						<LazyRoute load={() => import('./routes/UserList.svelte')} props={{ userId: parsed.id ?? '' }} />
+					{:else if parsed.name === 'privateList'}
+						<LazyRoute load={() => import('./routes/PrivateList.svelte')} props={{ listId: parsed.id ?? '' }} />
 					{:else if parsed.name === 'lists'}
 						<LazyRoute load={() => import('./routes/ListsPage.svelte')} />
 					{:else if parsed.name === 'archive'}

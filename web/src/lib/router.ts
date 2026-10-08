@@ -11,12 +11,14 @@ export const route = readable<string>(parseHash(), (set) => {
 });
 
 const USER_LIST = /^\/list\/([^/]+)$/;
+const PRIVATE_LIST = /^\/private-list\/([^/]+)$/;
 const ARCHIVE_DETAIL = /^\/archive\/([^/]+)$/;
 
 export interface ParsedRoute {
   name:
     | "myList"
     | "userList"
+    | "privateList"
     | "lists"
     | "archive"
     | "archiveDetail"
@@ -30,6 +32,8 @@ export function parseRoute(path: string): ParsedRoute {
   if (path === "/" || path === "") return { name: "myList" };
   const userList = USER_LIST.exec(path);
   if (userList) return { name: "userList", id: userList[1]! };
+  const privateList = PRIVATE_LIST.exec(path);
+  if (privateList) return { name: "privateList", id: privateList[1]! };
   switch (path) {
     case "/lists":
       return { name: "lists" };

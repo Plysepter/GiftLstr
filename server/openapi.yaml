@@ -125,6 +125,16 @@ components:
           type: string
         displayName:
           type: string
+        birthday:
+          type: string
+          description: Birthday MM-DD.
+        themeStyle:
+          type: string
+          description: >
+            The active theme. For a private list this is the theme chosen for
+            that list rather than the account's profile theme.
+        holidayReset:
+          type: string
       required: [id, username, displayName]
     UserListResponse:
       type: object
@@ -161,6 +171,11 @@ components:
           description: Number of items the current user has claimed on this user's active list.
         connected:
           type: boolean
+        isPrivate:
+          type: boolean
+          description: >
+            True for the caller's own private lists, which are merged into this
+            page inline. Private lists are only ever returned to their owner.
         canView:
           type: boolean
         claimedLabel:
@@ -172,12 +187,16 @@ components:
             The viewer's private spend in cents on this user's active list.
             Only present when the viewer has claimed something and spending
             tracking is enabled.
-      required: [id, displayName, username, birthday, myClaims, connected, canView, claimedLabel]
+      required: [id, displayName, username, birthday, myClaims, connected, isPrivate, canView, claimedLabel]
     ListsPageResponse:
       type: object
       properties:
         users:
           type: array
+          description: >
+            Users the viewer may see merged with the viewer's own private
+            lists, sorted together: dated entries by birthday then name,
+            undated entries last.
           items:
             $ref: '#/components/schemas/ListsPageUser'
         page:
@@ -186,7 +205,28 @@ components:
           type: boolean
         total:
           type: integer
+          description: Visible users plus the caller's private lists.
       required: [users, page, hasMore, total]
+    PrivateListResponse:
+      type: object
+      description: >
+        One of the caller's own private lists. Same shape as a user list;
+        username is always empty and displayName is "First Last".
+      properties:
+        user:
+          $ref: '#/components/schemas/ListUser'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Item'
+        isOwner:
+          type: boolean
+        totalSpendCents:
+          type: integer
+          description: >
+            The viewer's private spend in cents on the active items of this
+            list. Only present when spending tracking is enabled.
+      required: [user, items, isOwner]
     ArchiveListSummary:
       type: object
       properties:
@@ -383,6 +423,9 @@ paths:
   /api/lists:
     get:
       summary: List all users' lists (paginated)
+      description: >
+        Users the viewer may see (everyone for admins, connections otherwise)
+        merged with the viewer's own private lists as one inline sequence.
       parameters:
         - $ref: '#/components/parameters/page'
       responses:
@@ -394,6 +437,144 @@ paths:
                 $ref: '#/components/schemas/ListsPageResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/private-lists:
+    post:
+      summary: Create a private list
+      description: >
+        Creates a private list of gift ideas for a person (first name, last
+        name, birthday) owned solely by the caller. Private lists are never
+        shared, never archived, and appear inline on /api/lists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+                birthday:
+                  type: string
+                  description: Birthday MM-DD.
+                theme:
+                  type: string
+                  description: ThemeStyle for the list; defaults to "aurora".
+              required: [firstName, lastName, birthday]
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: UUID of the new private list.
+                required: [id]
+        '400':
+          description: 'Missing name or invalid birthday.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/private-lists/{id}:
+    get:
+      summary: Get one of your private lists
+      description: Only the owner can read a private list; everyone else gets 404.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: The private list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivateListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Private list not found (or not yours).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      summary: Update one of your private lists
+      description: >
+        Updates any of firstName, lastName, birthday or theme on one of the
+        caller's private lists. The list is renamed to "First Last". Only the
+        owner may edit it.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                firstName:
+                  type: string
+                lastName:
+                  type: string
+                birthday:
+                  type: string
+                  description: Birthday MM-DD.
+                theme:
+                  type: string
+                  description: ThemeStyle for the list; defaults to "aurora".
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                required: [id]
+        '400':
+          description: 'Empty patch, invalid name, birthday or theme.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Private list not found (or not yours).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      summary: Hard-delete one of your private lists
+      description: Permanently deletes the list; its items and claims cascade away.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Private list not found (or not yours).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/users/{id}/list:
     get:
@@ -422,6 +603,9 @@ paths:
   /api/my/items:
     post:
       summary: Add an item to your own list
+      description: >
+        Adds to the caller's active list, or to one of the caller's private
+        lists when listId is given.
       requestBody:
         required: true
         content:
@@ -435,6 +619,9 @@ paths:
                   type: string
                 notes:
                   type: string
+                listId:
+                  type: string
+                  description: UUID of one of the caller's private lists.
               required: [title]
       responses:
         '201':
@@ -456,6 +643,12 @@ paths:
                 $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: listId does not name one of the caller's private lists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /api/my/items/{id}:
     patch:
@@ -516,7 +709,8 @@ paths:
       summary: Reorder the items on your own list
       description: >
         Assigns sequential sort orders (array position) to the given item ids.
-        Every id must belong to the caller's active list.
+        Every id must belong to the target list: the caller's active list, or
+        the private list named by listId.
       requestBody:
         required: true
         content:
@@ -529,6 +723,9 @@ paths:
                   items:
                     type: string
                   description: All active item ids (UUIDs) in their new display order.
+                listId:
+                  type: string
+                  description: UUID of one of the caller's private lists.
               required: [ids]
       responses:
         '200':
@@ -546,7 +743,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          description: An id was not found on your active list.
+          description: An id was not found on the target list, or listId is not the caller's private list.
           content:
             application/json:
               schema:
@@ -576,7 +773,10 @@ paths:
   /api/items/{id}/claim:
     put:
       summary: Claim an item on another user's list
-      description: Prevents duplicate purchases. Idempotent when you already hold the claim.
+      description: >
+        Prevents duplicate purchases. Idempotent when you already hold the
+        claim. On your own private list you may claim your own ideas to track
+        prices; nobody else can claim there at all.
       parameters:
         - $ref: '#/components/parameters/pathId'
       responses:
@@ -589,7 +789,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Cannot claim this item (not connected, own item, or inactive list).
+          description: Cannot claim this item (not connected, own item, private list you do not own, or inactive list).
           content:
             application/json:
               schema:

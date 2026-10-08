@@ -768,6 +768,11 @@ h1 .accent,
   top: 1.25rem;
   right: 0;
   display: flex;
+  gap: 0.45rem;
+}
+/* Room for an extra action button (e.g. the private-list "+") beside the toggle. */
+.titlerow.with-actions {
+  padding-right: 96px;
 }
 #themeToggle {
   width: 40px;
@@ -924,6 +929,42 @@ h1 .accent,
     justify-content: flex-end;
   }
   .mylist .actions .drag {
+    position: absolute;
+    top: 0.75rem;
+    right: 0.75rem;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+}
+/* Private lists reuse the My List card geometry: edit/del/grip pinned
+   top-right on wide screens, grip alone pinned top-right on phones. */
+.privatelist .card {
+  position: relative;
+}
+.privatelist .row1 {
+  padding-right: 44px;
+}
+.privatelist .actions {
+  display: flex;
+  gap: 0.4rem;
+}
+@media (min-width: 481px) {
+  .privatelist .actions {
+    position: absolute;
+    top: 0.85rem;
+    right: 0.85rem;
+  }
+  .privatelist .row1 {
+    padding-right: 148px;
+  }
+}
+@media (max-width: 480px) {
+  .privatelist .actions {
+    margin-top: 0.65rem;
+    justify-content: flex-end;
+  }
+  .privatelist .actions .drag {
     position: absolute;
     top: 0.75rem;
     right: 0.75rem;

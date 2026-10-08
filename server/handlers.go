@@ -50,6 +50,10 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/profile", rl.rateLimit(auth(handleProfile)))
 
 	mux.HandleFunc("GET /api/lists", rl.rateLimit(auth(handleLists)))
+	mux.HandleFunc("POST /api/private-lists", rl.rateLimit(auth(handleCreatePrivateList)))
+	mux.HandleFunc("GET /api/private-lists/{id}", rl.rateLimit(auth(handlePrivateList)))
+	mux.HandleFunc("PATCH /api/private-lists/{id}", rl.rateLimit(auth(handleUpdatePrivateList)))
+	mux.HandleFunc("DELETE /api/private-lists/{id}", rl.rateLimit(auth(handleDeletePrivateList)))
 	mux.HandleFunc("GET /api/users/{id}/list", rl.rateLimit(auth(handleUserList)))
 	mux.HandleFunc("POST /api/users/{id}/private-items", rl.rateLimit(auth(handleAddPrivateIdea)))
 	mux.HandleFunc("DELETE /api/users/{id}/private-items/{itemID}", rl.rateLimit(auth(handleDeletePrivateIdea)))
@@ -532,6 +536,7 @@ type listEntry struct {
 	Birthday     string `json:"birthday"`
 	MyClaims     int    `json:"myClaims"`
 	Connected    bool   `json:"connected"`
+	IsPrivate    bool   `json:"isPrivate"`
 	CanView      bool   `json:"canView"`
 	ClaimedLabel string `json:"claimedLabel"`
 	SpendCents   *int   `json:"spendCents,omitempty"`
@@ -544,6 +549,9 @@ type listsResponse struct {
 	Total   int         `json:"total"`
 }
 
+// handleLists pages through the users the viewer may see (everyone for
+// admins, connections otherwise) merged with the viewer's own private lists,
+// sorted as one sequence: dated first by birthday, then name, undated last.
 func handleLists(w http.ResponseWriter, r *http.Request) {
 	viewer := userFrom(r)
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -558,30 +566,55 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 	} else {
 		db.QueryRow(`SELECT COUNT(*) FROM users u WHERE u.id != ? AND EXISTS(SELECT 1 FROM connections c WHERE (c.user_id = ? AND c.other_user_id = u.id) OR (c.user_id = u.id AND c.other_user_id = ?))`, viewer.ID, viewer.ID, viewer.ID).Scan(&total)
 	}
+	var privateTotal int
+	db.QueryRow(`SELECT COUNT(*) FROM lists WHERE user_id = ? AND is_private = 1 AND archived_at IS NULL`, viewer.ID).Scan(&privateTotal)
+	total += privateTotal
 
 	offset := (page - 1) * per
+	// The private-list arm only ever selects the viewer's own lists; its
+	// columns must line up positionally with the users arm above it.
+	const privateArm = `UNION ALL
+			SELECT l.id, TRIM(l.first_name || ' ' || l.last_name), '', l.birthday,
+				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id
+				 WHERE i.list_id = l.id AND c.user_id = ?),
+				(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id
+				 WHERE i2.list_id = l.id AND c2.user_id = ?),
+				0, 1
+			FROM lists l WHERE l.user_id = ? AND l.is_private = 1 AND l.archived_at IS NULL`
 	var rows *sql.Rows
 	var err error
 	if viewer.IsAdmin {
 		rows, err = db.Query(`
-			SELECT u.id, u.display_name, u.username, u.birthday,
-				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
-				(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
-				 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
-				(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?))
-			FROM users u WHERE u.id != ? ORDER BY CASE WHEN u.birthday = '' THEN 1 ELSE 0 END, u.birthday, u.display_name LIMIT ? OFFSET ?`,
-			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
+			SELECT id, display_name, username, birthday, my_claims, my_spend, connected, is_private FROM (
+				SELECT u.id AS id, u.display_name AS display_name, u.username AS username, u.birthday AS birthday,
+					(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
+					 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
+					(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
+					 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
+					(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?)) AS connected,
+					0 AS is_private
+				FROM users u WHERE u.id != ?
+				`+privateArm+`
+			) ORDER BY CASE WHEN birthday = '' THEN 1 ELSE 0 END, birthday, display_name LIMIT ? OFFSET ?`,
+			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID,
+			viewer.ID, viewer.ID, viewer.ID,
+			per, offset)
 	} else {
 		rows, err = db.Query(`
-			SELECT u.id, u.display_name, u.username, u.birthday,
-				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
-				(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
-				 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
-				(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?))
-			FROM users u WHERE u.id != ? AND EXISTS(SELECT 1 FROM connections c2 WHERE (c2.user_id = ? AND c2.other_user_id = u.id) OR (c2.user_id = u.id AND c2.other_user_id = ?)) ORDER BY CASE WHEN u.birthday = '' THEN 1 ELSE 0 END, u.birthday, u.display_name LIMIT ? OFFSET ?`,
-			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, per, offset)
+			SELECT id, display_name, username, birthday, my_claims, my_spend, connected, is_private FROM (
+				SELECT u.id AS id, u.display_name AS display_name, u.username AS username, u.birthday AS birthday,
+					(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
+					 WHERE l.user_id = u.id AND l.archived_at IS NULL AND c.user_id = ?) AS my_claims,
+					(SELECT COALESCE(SUM(c2.price_cents), 0) FROM claims c2 JOIN items i2 ON i2.id = c2.item_id JOIN lists l2 ON l2.id = i2.list_id
+					 WHERE l2.user_id = u.id AND l2.archived_at IS NULL AND c2.user_id = ?) AS my_spend,
+					(SELECT COUNT(*) FROM connections conn WHERE (conn.user_id = ? AND conn.other_user_id = u.id) OR (conn.user_id = u.id AND conn.other_user_id = ?)) AS connected,
+					0 AS is_private
+				FROM users u WHERE u.id != ? AND EXISTS(SELECT 1 FROM connections c2 WHERE (c2.user_id = ? AND c2.other_user_id = u.id) OR (c2.user_id = u.id AND c2.other_user_id = ?))
+				`+privateArm+`
+			) ORDER BY CASE WHEN birthday = '' THEN 1 ELSE 0 END, birthday, display_name LIMIT ? OFFSET ?`,
+			viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID, viewer.ID,
+			viewer.ID, viewer.ID, viewer.ID,
+			per, offset)
 	}
 	if err != nil {
 		fail(w, 500, "query error")
@@ -592,12 +625,14 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var e listEntry
 		var claims, connected, spend int
-		if err := rows.Scan(&e.ID, &e.DisplayName, &e.Username, &e.Birthday, &claims, &spend, &connected); err != nil {
+		var isPrivate bool
+		if err := rows.Scan(&e.ID, &e.DisplayName, &e.Username, &e.Birthday, &claims, &spend, &connected, &isPrivate); err != nil {
 			continue
 		}
 		e.Connected = connected > 0
+		e.IsPrivate = isPrivate
 		e.MyClaims = claims
-		e.CanView = viewer.IsAdmin || e.Connected
+		e.CanView = isPrivate || viewer.IsAdmin || e.Connected
 		if claims > 0 {
 			e.ClaimedLabel = "claimed " + strconv.Itoa(claims) + " items"
 			if viewer.SpendingEnabled {
@@ -609,6 +644,261 @@ func handleLists(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, listsResponse{Users: users, Page: page, HasMore: page*per < total, Total: total})
+}
+
+// ---------- private lists ----------
+
+// handleCreatePrivateList creates a private list for the caller: a list of
+// gift ideas for a person (first name, last name, birthday) that belongs to
+// the caller alone. It shares the schema with regular lists but is addressed
+// by id, never shared, and never archived.
+func handleCreatePrivateList(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	var req struct {
+		FirstName string `json:"firstName"`
+		LastName  string `json:"lastName"`
+		Birthday  string `json:"birthday"` // MM-DD
+		Theme     string `json:"theme"`    // ThemeStyle; defaults to "aurora"
+	}
+	if err := decode(w, r, &req); err != nil {
+		fail(w, 400, "bad request")
+		return
+	}
+	firstName := strings.TrimSpace(req.FirstName)
+	lastName := strings.TrimSpace(req.LastName)
+	if firstName == "" || lastName == "" {
+		fail(w, 400, "first and last name required")
+		return
+	}
+	if len(firstName) > 60 || len(lastName) > 60 {
+		fail(w, 400, "name too long")
+		return
+	}
+	birthday := normalizeMMDD(req.Birthday)
+	if birthday == "" {
+		fail(w, 400, "valid birthday required, e.g. 05-15")
+		return
+	}
+	theme := strings.TrimSpace(req.Theme)
+	if theme == "" {
+		theme = "aurora"
+	}
+	if !validThemeStyles[theme] {
+		fail(w, 400, "invalid theme")
+		return
+	}
+	id := newID()
+	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
+		id, u.ID, strings.TrimSpace(firstName+" "+lastName), firstName, lastName, birthday, theme); err != nil {
+		log.Printf("create private list: %v", err)
+		fail(w, 500, "create failed")
+		return
+	}
+	writeJSON(w, 201, map[string]any{"id": id})
+}
+
+type privateListResponse struct {
+	User            listOwner  `json:"user"`
+	Items           []listItem `json:"items"`
+	IsOwner         bool       `json:"isOwner"`
+	TotalSpendCents *int       `json:"totalSpendCents,omitempty"`
+}
+
+// handlePrivateList serves one of the caller's own private lists. The shape
+// mirrors the regular user-list response so the client can reuse its list
+// rendering; only the creator can ever read it.
+func handlePrivateList(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	listID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	var ownerID, firstName, lastName, birthday, theme string
+	if err := db.QueryRow(`SELECT user_id, first_name, last_name, birthday, theme FROM lists WHERE id = ? AND is_private = 1 AND archived_at IS NULL`, listID).
+		Scan(&ownerID, &firstName, &lastName, &birthday, &theme); err != nil || ownerID != u.ID {
+		fail(w, 404, "private list not found")
+		return
+	}
+	items, err := itemRows("i.list_id = ?", listID)
+	if err != nil {
+		fail(w, 500, "query error")
+		return
+	}
+	// Only the creator can hold claims here, so every claim is theirs; hide
+	// the claimer identity the way live lists hide other claimers.
+	for i := range items {
+		it := &items[i]
+		if it.Claimed && it.ClaimedUserID == u.ID {
+			it.ClaimedByMe = true
+		}
+		it.ClaimedByName = nil
+		it.ClaimedUserID = ""
+	}
+	// Prices stay private to the claimer (always the viewer here) and only
+	// render when spending tracking is enabled.
+	var totalSpend *int
+	if u.SpendingEnabled {
+		total, err := listTotalSpend(listID, u.ID)
+		if err != nil {
+			fail(w, 500, "query error")
+			return
+		}
+		totalSpend = &total
+		rows, err := db.Query(`SELECT c.item_id, c.price_cents FROM claims c JOIN items i ON i.id = c.item_id WHERE i.list_id = ? AND c.user_id = ?`, listID, u.ID)
+		if err != nil {
+			fail(w, 500, "query error")
+			return
+		}
+		spend := map[string]int{}
+		for rows.Next() {
+			var itemID string
+			var cents int
+			if rows.Scan(&itemID, &cents) == nil {
+				spend[itemID] = cents
+			}
+		}
+		rows.Close()
+		for i := range items {
+			if cents, ok := spend[items[i].ID]; ok {
+				c := cents
+				items[i].MySpendCents = &c
+			}
+		}
+	}
+	owner := listOwner{
+		ID:          listID,
+		DisplayName: strings.TrimSpace(firstName + " " + lastName),
+		Birthday:    birthday,
+		ThemeStyle:  theme,
+	}
+	if owner.ThemeStyle == "" {
+		owner.ThemeStyle = "aurora"
+	}
+	writeJSON(w, 200, privateListResponse{User: owner, Items: items, IsOwner: true, TotalSpendCents: totalSpend})
+}
+
+// handleUpdatePrivateList updates one of the caller's private lists. Any of
+// firstName, lastName, birthday, or theme may be supplied; the list's label is
+// rebuilt from the names. Only the owner may edit it.
+func handleUpdatePrivateList(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	listID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	var req struct {
+		FirstName *string `json:"firstName"`
+		LastName  *string `json:"lastName"`
+		Birthday  *string `json:"birthday"` // MM-DD
+		Theme     *string `json:"theme"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		fail(w, 400, "bad request")
+		return
+	}
+	if req.FirstName == nil && req.LastName == nil && req.Birthday == nil && req.Theme == nil {
+		fail(w, 400, "firstName, lastName, birthday or theme required")
+		return
+	}
+	var ownerID, firstName, lastName, birthday, theme string
+	if err := db.QueryRow(`SELECT user_id, first_name, last_name, birthday, theme FROM lists WHERE id = ? AND is_private = 1 AND archived_at IS NULL`, listID).
+		Scan(&ownerID, &firstName, &lastName, &birthday, &theme); err != nil || ownerID != u.ID {
+		fail(w, 404, "private list not found")
+		return
+	}
+	if req.FirstName != nil {
+		firstName = strings.TrimSpace(*req.FirstName)
+		if firstName == "" {
+			fail(w, 400, "first name required")
+			return
+		}
+	}
+	if req.LastName != nil {
+		lastName = strings.TrimSpace(*req.LastName)
+		if lastName == "" {
+			fail(w, 400, "last name required")
+			return
+		}
+	}
+	if len(firstName) > 60 || len(lastName) > 60 {
+		fail(w, 400, "name too long")
+		return
+	}
+	if req.Birthday != nil {
+		birthday = normalizeMMDD(*req.Birthday)
+		if birthday == "" {
+			fail(w, 400, "valid birthday required, e.g. 05-15")
+			return
+		}
+	}
+	if req.Theme != nil {
+		theme = strings.TrimSpace(*req.Theme)
+		if theme == "" {
+			theme = "aurora"
+		}
+		if !validThemeStyles[theme] {
+			fail(w, 400, "invalid theme")
+			return
+		}
+	}
+	if _, err := db.Exec(`UPDATE lists SET first_name = ?, last_name = ?, birthday = ?, label = ?, theme = ? WHERE id = ?`,
+		firstName, lastName, birthday, strings.TrimSpace(firstName+" "+lastName), theme, listID); err != nil {
+		log.Printf("update private list: %v", err)
+		fail(w, 500, "update failed")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": listID})
+}
+
+// handleDeletePrivateList hard-deletes one of the caller's private lists; its
+// items and their claims cascade away with it.
+func handleDeletePrivateList(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	listID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	res, err := db.Exec(`DELETE FROM lists WHERE id = ? AND user_id = ? AND is_private = 1`, listID, u.ID)
+	if err != nil {
+		log.Printf("delete private list: %v", err)
+		fail(w, 500, "delete failed")
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(w, 404, "private list not found")
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// ownedPrivateList reports whether listID is one of userID's live private
+// lists.
+func ownedPrivateList(userID, listID string) bool {
+	var ok bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM lists WHERE id = ? AND user_id = ? AND is_private = 1 AND archived_at IS NULL)`, listID, userID).Scan(&ok)
+	return err == nil && ok
+}
+
+// errListNotFound signals that an explicitly requested list is not one the
+// caller may write to.
+var errListNotFound = errors.New("list not found")
+
+// resolveOwnList maps an item mutation to its target list: an explicitly
+// named private list when listID is given, otherwise the caller's active
+// list. Private lists are only ever addressed by id so they can never be
+// mistaken for the active one.
+func resolveOwnList(u *user, listID string) (string, error) {
+	if listID == "" {
+		return activeListID(u.ID)
+	}
+	if !ownedPrivateList(u.ID, listID) {
+		return "", errListNotFound
+	}
+	return listID, nil
 }
 
 // ---------- items (own list) ----------
@@ -855,9 +1145,10 @@ func atItemLimit(listID string) (bool, error) {
 func handleAddItem(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	var req struct {
-		Title string `json:"title"`
-		URL   string `json:"url"`
-		Notes string `json:"notes"`
+		Title  string  `json:"title"`
+		URL    string  `json:"url"`
+		Notes  string  `json:"notes"`
+		ListID *string `json:"listId"` // optional private list
 	}
 	if err := decode(w, r, &req); err != nil || strings.TrimSpace(req.Title) == "" {
 		fail(w, 400, "title required")
@@ -868,7 +1159,15 @@ func handleAddItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "url must be an absolute http(s) link")
 		return
 	}
-	listID, err := activeListID(u.ID)
+	target := ""
+	if req.ListID != nil {
+		target = *req.ListID
+	}
+	listID, err := resolveOwnList(u, target)
+	if err == errListNotFound {
+		fail(w, 404, "list not found")
+		return
+	}
 	if err != nil {
 		fail(w, 500, "list error")
 		return
@@ -1013,17 +1312,27 @@ func handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReorderItems assigns sequential sort orders to the given item ids,
-// which must all belong to the caller's active list.
+// which must all belong to the target list: the caller's active list, or the
+// explicitly named private list.
 func handleReorderItems(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs    []string `json:"ids"`
+		ListID *string  `json:"listId"` // optional private list
 	}
 	if err := decode(w, r, &req); err != nil || len(req.IDs) == 0 {
 		fail(w, 400, "ids required")
 		return
 	}
-	listID, err := activeListID(u.ID)
+	target := ""
+	if req.ListID != nil {
+		target = *req.ListID
+	}
+	listID, err := resolveOwnList(u, target)
+	if err == errListNotFound {
+		fail(w, 404, "list not found")
+		return
+	}
 	if err != nil {
 		fail(w, 500, "list error")
 		return
@@ -1252,8 +1561,20 @@ func handleDeleteSuggestedItem(w http.ResponseWriter, r *http.Request) {
 
 func claimableItem(r *http.Request, itemID string) (viewer *user, listUserID string, ok bool) {
 	viewer = userFrom(r)
-	err := db.QueryRow(`SELECT l.user_id FROM items i JOIN lists l ON l.id = i.list_id WHERE i.id = ? AND l.archived_at IS NULL`, itemID).Scan(&listUserID)
-	if err != nil || listUserID == viewer.ID {
+	var isPrivate bool
+	err := db.QueryRow(`SELECT l.user_id, l.is_private FROM items i JOIN lists l ON l.id = i.list_id WHERE i.id = ? AND l.archived_at IS NULL`, itemID).Scan(&listUserID, &isPrivate)
+	if err != nil {
+		return nil, "", false
+	}
+	if isPrivate {
+		// Private lists belong to their creator alone: they may claim their
+		// own ideas to track prices, everyone else is locked out entirely.
+		if listUserID != viewer.ID {
+			return nil, "", false
+		}
+		return viewer, listUserID, true
+	}
+	if listUserID == viewer.ID {
 		return nil, "", false
 	}
 	if !canView(viewer.ID, viewer.IsAdmin, listUserID) {
@@ -1680,17 +2001,17 @@ func handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		rows, err = db.Query(`
 			SELECT u.id, u.username, u.display_name, u.is_admin, u.birthday,
 				(SELECT COUNT(*) FROM items i JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND i.removed_at IS NULL),
+				 WHERE l.user_id = u.id AND l.is_private = 0 AND l.archived_at IS NULL AND i.removed_at IS NULL),
 				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL)
+				 WHERE l.user_id = u.id AND l.is_private = 0 AND l.archived_at IS NULL)
 			FROM users u WHERE display_name LIKE ? COLLATE NOCASE OR username LIKE ? COLLATE NOCASE ORDER BY display_name LIMIT ? OFFSET ?`, like, like, per, offset)
 	} else {
 		rows, err = db.Query(`
 			SELECT u.id, u.username, u.display_name, u.is_admin, u.birthday,
 				(SELECT COUNT(*) FROM items i JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL AND i.removed_at IS NULL),
+				 WHERE l.user_id = u.id AND l.is_private = 0 AND l.archived_at IS NULL AND i.removed_at IS NULL),
 				(SELECT COUNT(*) FROM claims c JOIN items i ON i.id = c.item_id JOIN lists l ON l.id = i.list_id
-				 WHERE l.user_id = u.id AND l.archived_at IS NULL)
+				 WHERE l.user_id = u.id AND l.is_private = 0 AND l.archived_at IS NULL)
 			FROM users u ORDER BY display_name LIMIT ? OFFSET ?`, per, offset)
 	}
 	if err != nil {

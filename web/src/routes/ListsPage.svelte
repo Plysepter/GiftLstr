@@ -7,6 +7,7 @@
 	import EmptyState from '../lib/EmptyState.svelte';
 	import ErrorState from '../lib/ErrorState.svelte';
 	import OfflineState from '../lib/OfflineState.svelte';
+	import PrivateListDialog from '../lib/PrivateListDialog.svelte';
 	import { isOfflineError } from '../lib/offlineQueue.js';
 	import { network } from '../lib/network.svelte.js';
 	import Icon from '../lib/Icon.svelte';
@@ -71,10 +72,27 @@
 			setTimeout(() => (connectState = 'idle'), 2200);
 		}
 	}
+
+	// ---------- create private list ----------
+	let createOpen = $state(false);
+	// The dialog randomizes the list's starting theme.
+	const createInitial = { firstName: '', lastName: '', birthday: '' };
+
+	function onCreated(_id: string): void {
+		// Back to the first page so the new list (sorted by birthday) is visible.
+		if (page === 1) void load();
+		else page = 1;
+	}
 </script>
 
 <div class="lists-page">
-	<PageHeader title={"Lists"} accent={null} />
+	<PageHeader title={"Lists"} accent={null}>
+		{#snippet actions()}
+			<button class="add-list-btn" type="button" aria-label="New private list" onclick={() => (createOpen = true)}>
+				<Icon name="plus" size={20} strokeWidth={2.5} />
+			</button>
+		{/snippet}
+	</PageHeader>
 	{#if network.offline}
 		<OfflineState onRetry={() => void load()} />
 	{:else if error}
@@ -83,7 +101,10 @@
 	{#each users as u (u.id)}
 		<div class="card spread">
 			<div class="listinfo">
-				<strong>{u.displayName}</strong>
+				<div class="name-row">
+					<strong>{u.displayName}</strong>
+					{#if u.isPrivate}<span class="badge priv-chip">private</span>{/if}
+				</div>
 				<span class="meta muted">
 					{#if u.birthday}🎂 {u.birthday}{/if}
 					{#if u.birthday} · {/if}
@@ -95,7 +116,7 @@
 					</span>
 				{/if}
 			</div>
-			<a href={`#/list/${u.id}`}><button class="secondary">View list</button></a>
+			<a href={u.isPrivate ? `#/private-list/${u.id}` : `#/list/${u.id}`}><button class="secondary">View list</button></a>
 		</div>
 	{/each}
 	<EmptyState
@@ -142,6 +163,14 @@
 			{#if connectMsg}<p class="connect-msg" aria-live="polite">{connectMsg}</p>{/if}
 		</div>
 	</form>
+
+	<PrivateListDialog
+		open={createOpen}
+		listId={null}
+		initial={createInitial}
+		onclose={() => (createOpen = false)}
+		onsaved={onCreated}
+	/>
 </div>
 
 <style>
@@ -158,12 +187,43 @@
 	.listinfo strong {
 		font-size: 1.05rem;
 	}
+	.name-row {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
+		flex-wrap: wrap;
+	}
 	.meta {
 		font-size: 0.85rem;
 	}
 	.spend-amt {
 		color: var(--acc-ink);
 		font-variant-numeric: tabular-nums;
+	}
+	.add-list-btn {
+		width: 40px;
+		height: 40px;
+		padding: 0;
+		border-radius: 50%;
+		border: 1px solid var(--line);
+		background: var(--surface);
+		color: var(--muted);
+		cursor: pointer;
+		display: grid;
+		place-items: center;
+		box-shadow: none;
+		transition:
+			transform 0.15s ease,
+			color 0.15s ease,
+			border-color 0.15s ease;
+	}
+	.add-list-btn:hover {
+		transform: scale(1.07);
+		color: var(--acc-ink);
+		border-color: var(--acc);
+	}
+	.add-list-btn:active {
+		transform: scale(0.92);
 	}
 	.pager {
 		display: flex;

@@ -105,7 +105,7 @@ func seedUser(t *testing.T, authID, username string, isAdmin bool) *user {
 func activeList(t *testing.T, userID string) string {
 	t.Helper()
 	var id string
-	if err := db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND archived_at IS NULL`, userID).Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM lists WHERE user_id = ? AND is_private = 0 AND archived_at IS NULL`, userID).Scan(&id); err != nil {
 		t.Fatalf("active list: %v", err)
 	}
 	return id
@@ -943,6 +943,9 @@ func TestAuthRequiredForProtectedEndpoints(t *testing.T) {
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/me"},
 		{http.MethodGet, "/api/lists"},
+		{http.MethodPost, "/api/private-lists"},
+		{http.MethodGet, "/api/private-lists/1"},
+		{http.MethodDelete, "/api/private-lists/1"},
 		{http.MethodPost, "/api/my/items"},
 		{http.MethodPut, "/api/items/1/claim"},
 		{http.MethodGet, "/api/admin/users"},
@@ -1399,5 +1402,333 @@ func TestListSpendIsPerList(t *testing.T) {
 	_, resp = doJSON(t, viewer, http.MethodGet, fmt.Sprintf("/api/users/%s/list", alice.ID), nil)
 	if resp["totalSpendCents"] != float64(3000) {
 		t.Errorf("alice list totalSpendCents must stay 3000, got %v", resp["totalSpendCents"])
+	}
+}
+
+// TestPrivateListLifecycle walks the whole private-list feature: creation and
+// validation, owner-only reads, item edits scoped by listId, self-claim with
+// price tracking, inline placement on the lists page, and hard delete.
+func TestPrivateListLifecycle(t *testing.T) {
+	me := seedUser(t, "c_privlist_me", "privlist_me", false)
+	stranger := strangerUser(t)
+	admin := seedUser(t, "c_privlist_admin", "privlist_admin", true)
+	connectUsers(t, me.ID, stranger.ID)
+
+	// Creation requires both names and a valid birthday.
+	for _, req := range []body{
+		{"firstName": "", "lastName": "Doe", "birthday": "05-15"},
+		{"firstName": "Jane", "lastName": "", "birthday": "05-15"},
+		{"firstName": "Jane", "lastName": "Doe", "birthday": "junk"},
+		{"firstName": "Jane", "lastName": "Doe", "birthday": "13-99"},
+	} {
+		w, _ := doJSON(t, me, http.MethodPost, "/api/private-lists", req)
+		mustStatus(t, w, http.StatusBadRequest)
+	}
+
+	w, resp := doJSON(t, me, http.MethodPost, "/api/private-lists",
+		body{"firstName": " Jane ", "lastName": "Doe", "birthday": "5/15"})
+	mustStatus(t, w, http.StatusCreated)
+	privateID, _ := resp["id"].(string)
+	if privateID == "" {
+		t.Fatalf("expected list id, got %v", resp)
+	}
+
+	// Stored normalized: trimmed "First Last" label, canonical birthday, flag set.
+	var label, bday string
+	var isPrivate int
+	if err := db.QueryRow(`SELECT label, birthday, is_private FROM lists WHERE id = ?`, privateID).Scan(&label, &bday, &isPrivate); err != nil {
+		t.Fatalf("read private list: %v", err)
+	}
+	if label != "Jane Doe" || bday != "05-15" || isPrivate != 1 {
+		t.Errorf("stored label/birthday/flag = %q/%q/%d, want \"Jane Doe\"/05-15/1", label, bday, isPrivate)
+	}
+
+	// Only the owner can read it — not a connected stranger, not an admin.
+	w, _ = doJSON(t, stranger, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, admin, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, resp = doJSON(t, me, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusOK)
+	if resp["isOwner"] != true {
+		t.Error("owner should see isOwner=true")
+	}
+	owner := resp["user"].(map[string]any)
+	if owner["displayName"] != "Jane Doe" || owner["birthday"] != "05-15" {
+		t.Errorf("owner = %v, want displayName Jane Doe + birthday 05-15", owner)
+	}
+
+	// Items: listId targets the private list, omitting it targets the active list.
+	w, resp = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Mug", "listId": privateID})
+	mustStatus(t, w, http.StatusCreated)
+	mugID, _ := resp["id"].(string)
+	w, resp = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Socks"})
+	mustStatus(t, w, http.StatusCreated)
+	socksID, _ := resp["id"].(string)
+	for id, wantList := range map[string]string{mugID: privateID, socksID: activeList(t, me.ID)} {
+		var got string
+		if err := db.QueryRow(`SELECT list_id FROM items WHERE id = ?`, id).Scan(&got); err != nil || got != wantList {
+			t.Errorf("item %s landed on %q, want %q (%v)", id, got, wantList, err)
+		}
+	}
+
+	// The regular user-list endpoint serves only the active list.
+	_, resp = doJSON(t, me, http.MethodGet, fmt.Sprintf("/api/users/%s/list", me.ID), nil)
+	if got := len(resp["items"].([]any)); got != 1 {
+		t.Errorf("active list should hold only Socks, got %d items", got)
+	}
+
+	// A listId the caller does not own (or that does not exist) is rejected.
+	w, _ = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Nope", "listId": strangerUser(t).ID})
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Nope", "listId": "00000000-0000-0000-0000-000000000000"})
+	mustStatus(t, w, http.StatusNotFound)
+
+	// Edit/remove/restore work for the owner, 404 for anyone else.
+	w, _ = doJSON(t, me, http.MethodPatch, fmt.Sprintf("/api/my/items/%s", mugID), body{"title": "Mug v2"})
+	mustStatus(t, w, http.StatusOK)
+	w, _ = doJSON(t, stranger, http.MethodPatch, fmt.Sprintf("/api/my/items/%s", mugID), body{"title": "Hacked"})
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, stranger, http.MethodDelete, fmt.Sprintf("/api/my/items/%s", mugID), nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, me, http.MethodDelete, fmt.Sprintf("/api/my/items/%s", mugID), nil)
+	mustStatus(t, w, http.StatusOK)
+	w, _ = doJSON(t, me, http.MethodPost, fmt.Sprintf("/api/my/items/%s/restore", mugID), nil)
+	mustStatus(t, w, http.StatusOK)
+
+	// Reorder is scoped to the named private list.
+	w, resp = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Kettle", "listId": privateID})
+	mustStatus(t, w, http.StatusCreated)
+	kettleID, _ := resp["id"].(string)
+	w, _ = doJSON(t, me, http.MethodPut, "/api/my/items/order", body{"ids": []string{kettleID, mugID}, "listId": privateID})
+	mustStatus(t, w, http.StatusOK)
+	first := ""
+	if err := db.QueryRow(`SELECT id FROM items WHERE list_id = ? AND removed_at IS NULL ORDER BY sort_order, id LIMIT 1`, privateID).Scan(&first); err != nil || first != kettleID {
+		t.Errorf("first item after reorder = %q, want %q (%v)", first, kettleID, err)
+	}
+	// Reordering against someone else's private list is rejected.
+	w2, resp2 := doJSON(t, stranger, http.MethodPost, "/api/private-lists",
+		body{"firstName": "Sam", "lastName": "Stone", "birthday": "02-02"})
+	mustStatus(t, w2, http.StatusCreated)
+	strangerPrivateID, _ := resp2["id"].(string)
+	w, _ = doJSON(t, me, http.MethodPut, "/api/my/items/order", body{"ids": []string{kettleID}, "listId": strangerPrivateID})
+	mustStatus(t, w, http.StatusNotFound)
+	// The active list id is not a private list either.
+	w, _ = doJSON(t, me, http.MethodPut, "/api/my/items/order", body{"ids": []string{kettleID}, "listId": activeList(t, stranger.ID)})
+	mustStatus(t, w, http.StatusNotFound)
+
+	// Claims: nobody else may claim — not a connected stranger, not an admin.
+	itemPath := fmt.Sprintf("/api/items/%s/claim", mugID)
+	w, _ = doJSON(t, stranger, http.MethodPut, itemPath, nil)
+	mustStatus(t, w, http.StatusForbidden)
+	w, _ = doJSON(t, admin, http.MethodPut, itemPath, nil)
+	mustStatus(t, w, http.StatusForbidden)
+	// The owner may self-claim to track the gift.
+	w, _ = doJSON(t, me, http.MethodPut, itemPath, nil)
+	mustStatus(t, w, http.StatusOK)
+
+	// Price tracking follows the same gating as anywhere else.
+	enableSpending(t, me)
+	// A stranger with spending enabled still gets nowhere without a claim.
+	enableSpending(t, stranger)
+	w, _ = doJSON(t, stranger, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", mugID), body{"price": 12.50})
+	mustStatus(t, w, http.StatusNotFound)
+	w, resp = doJSON(t, me, http.MethodPatch, fmt.Sprintf("/api/items/%s/price", mugID), body{"price": 12.50})
+	mustStatus(t, w, http.StatusOK)
+	if resp["mySpendCents"] != float64(1250) || resp["totalSpendCents"] != float64(1250) {
+		t.Errorf("price response = %v, want 1250/1250", resp)
+	}
+
+	// The private list read exposes the claim as the viewer's own, hides who
+	// holds it, and carries the spend totals.
+	_, resp = doJSON(t, me, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	items := resp["items"].([]any)
+	if len(items) != 2 {
+		t.Fatalf("private list should hold 2 items, got %d", len(items))
+	}
+	var claimed map[string]any
+	for _, raw := range items {
+		it := raw.(map[string]any)
+		if it["id"] == mugID {
+			claimed = it
+		}
+	}
+	if claimed == nil || claimed["claimedByMe"] != true {
+		t.Errorf("mug should be claimedByMe, got %v", claimed)
+	}
+	if _, exposed := claimed["claimedByName"]; exposed {
+		t.Error("claimer name should stay hidden")
+	}
+	if claimed["mySpendCents"] != float64(1250) {
+		t.Errorf("mug mySpendCents = %v, want 1250", claimed["mySpendCents"])
+	}
+	if resp["totalSpendCents"] != float64(1250) {
+		t.Errorf("private list totalSpendCents = %v, want 1250", resp["totalSpendCents"])
+	}
+
+	// Unclaim works for the claimer.
+	w, _ = doJSON(t, me, http.MethodDelete, itemPath, nil)
+	mustStatus(t, w, http.StatusOK)
+
+	// Lists page: the private list sits inline with the connected user,
+	// flagged private and viewable; it counts toward total/hasMore.
+	_, resp = doJSON(t, me, http.MethodGet, "/api/lists", nil)
+	if resp["total"] != float64(2) {
+		t.Errorf("lists total = %v, want 2 (one connection + one private list)", resp["total"])
+	}
+	if resp["hasMore"] != false {
+		t.Error("unexpected hasMore")
+	}
+	var privateEntry, strangerEntry map[string]any
+	for _, raw := range resp["users"].([]any) {
+		u := raw.(map[string]any)
+		switch u["id"] {
+		case privateID:
+			privateEntry = u
+		case stranger.ID:
+			strangerEntry = u
+		}
+	}
+	if privateEntry == nil {
+		t.Fatal("private list missing from lists page")
+	}
+	if privateEntry["isPrivate"] != true || privateEntry["canView"] != true {
+		t.Errorf("private entry flags = %v, want isPrivate+canView true", privateEntry)
+	}
+	if privateEntry["displayName"] != "Jane Doe" || privateEntry["username"] != "" {
+		t.Errorf("private entry identity = %v", privateEntry)
+	}
+	if strangerEntry == nil || strangerEntry["isPrivate"] == true {
+		t.Error("connected user entry should not be flagged private")
+	}
+
+	// The stranger sees the owner as a regular user, never the private list.
+	_, resp = doJSON(t, stranger, http.MethodGet, "/api/lists", nil)
+	for _, raw := range resp["users"].([]any) {
+		u := raw.(map[string]any)
+		if u["id"] == privateID {
+			t.Error("private list must not appear on someone else's lists page")
+		}
+	}
+
+	// Delete: only the owner may, and it cascades the items away.
+	w, _ = doJSON(t, stranger, http.MethodDelete, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, admin, http.MethodDelete, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, me, http.MethodDelete, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusOK)
+	var remaining int
+	db.QueryRow(`SELECT COUNT(*) FROM items WHERE list_id = ?`, privateID).Scan(&remaining)
+	if remaining != 0 {
+		t.Errorf("expected items cascade, found %d", remaining)
+	}
+	w, _ = doJSON(t, me, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, me, http.MethodDelete, "/api/private-lists/"+privateID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	_, resp = doJSON(t, me, http.MethodGet, "/api/lists", nil)
+	if resp["total"] != float64(1) {
+		t.Errorf("lists total after delete = %v, want 1", resp["total"])
+	}
+}
+
+// TestPrivateListKeepsActiveListIntact ensures creating a private list never
+// hijacks the caller's implicit active list, no matter the id ordering.
+func TestPrivateListKeepsActiveListIntact(t *testing.T) {
+	me := seedUser(t, "c_privlist_active", "privlist_active", false)
+	activeID := activeList(t, me.ID)
+
+	w, resp := doJSON(t, me, http.MethodPost, "/api/private-lists",
+		body{"firstName": "Pat", "lastName": "Miller", "birthday": "09-01"})
+	mustStatus(t, w, http.StatusCreated)
+	privateID, _ := resp["id"].(string)
+
+	// /api/me still reports the original active list.
+	_, meResp := doJSON(t, me, http.MethodGet, "/api/me", nil)
+	if meResp["activeListId"] != activeID {
+		t.Errorf("activeListId = %v, want %s", meResp["activeListId"], activeID)
+	}
+	// activeListID never resolves to the private list.
+	if id, err := activeListID(me.ID); err != nil || id != activeID {
+		t.Errorf("activeListID = %q, %v; want %q", id, err, activeID)
+	}
+	// Plain item adds still land on the active list.
+	_, itemResp := doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "X"})
+	var listID string
+	db.QueryRow(`SELECT list_id FROM items WHERE id = ?`, itemResp["id"]).Scan(&listID)
+	if listID != activeID {
+		t.Errorf("item landed on %q, want active %q", listID, activeID)
+	}
+	// Explicitly naming the active list as a listId is not a private list.
+	w, _ = doJSON(t, me, http.MethodPost, "/api/my/items", body{"title": "Y", "listId": activeID})
+	mustStatus(t, w, http.StatusNotFound)
+	// The private list id only ever addresses itself.
+	w, _ = doJSON(t, me, http.MethodGet, "/api/private-lists/"+activeID, nil)
+	mustStatus(t, w, http.StatusNotFound)
+	_ = privateID
+}
+
+// TestPrivateListThemeAndEdit covers the per-list theme and the PATCH endpoint
+// that edits names/birthday/theme.
+func TestPrivateListThemeAndEdit(t *testing.T) {
+	me := seedUser(t, "c_privlist_theme", "privlist_theme", false)
+	stranger := strangerUser(t)
+	admin := seedUser(t, "c_privlist_theme_admin", "privlist_theme_admin", true)
+
+	// An invalid theme is rejected at creation; a valid one is stored.
+	w, _ := doJSON(t, me, http.MethodPost, "/api/private-lists",
+		body{"firstName": "Jane", "lastName": "Doe", "birthday": "05-15", "theme": "neon"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	w, resp := doJSON(t, me, http.MethodPost, "/api/private-lists",
+		body{"firstName": "Jane", "lastName": "Doe", "birthday": "05-15", "theme": "forest"})
+	mustStatus(t, w, http.StatusCreated)
+	privateID, _ := resp["id"].(string)
+
+	var theme string
+	if err := db.QueryRow(`SELECT theme FROM lists WHERE id = ?`, privateID).Scan(&theme); err != nil || theme != "forest" {
+		t.Errorf("stored theme = %q (%v), want forest", theme, err)
+	}
+
+	// GET reflects the list theme back on the user.
+	_, resp = doJSON(t, me, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	owner := resp["user"].(map[string]any)
+	if owner["themeStyle"] != "forest" {
+		t.Errorf("private list user themeStyle = %v, want forest", owner["themeStyle"])
+	}
+
+	// PATCH is owner-only.
+	w, _ = doJSON(t, stranger, http.MethodPatch, "/api/private-lists/"+privateID, body{"theme": "ruby"})
+	mustStatus(t, w, http.StatusNotFound)
+	w, _ = doJSON(t, admin, http.MethodPatch, "/api/private-lists/"+privateID, body{"theme": "ruby"})
+	mustStatus(t, w, http.StatusNotFound)
+
+	// An empty PATCH is rejected, as are partial invalid values.
+	w, _ = doJSON(t, me, http.MethodPatch, "/api/private-lists/"+privateID, body{})
+	mustStatus(t, w, http.StatusBadRequest)
+	w, _ = doJSON(t, me, http.MethodPatch, "/api/private-lists/"+privateID, body{"firstName": ""})
+	mustStatus(t, w, http.StatusBadRequest)
+	w, _ = doJSON(t, me, http.MethodPatch, "/api/private-lists/"+privateID, body{"birthday": "junk"})
+	mustStatus(t, w, http.StatusBadRequest)
+	w, _ = doJSON(t, me, http.MethodPatch, "/api/private-lists/"+privateID, body{"theme": "neon"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// Editing any combination of values updates the row and rebuilds the label.
+	w, _ = doJSON(t, me, http.MethodPatch, "/api/private-lists/"+privateID,
+		body{"firstName": " Janet ", "birthday": "06-20", "theme": "lagoon"})
+	mustStatus(t, w, http.StatusOK)
+
+	var label, bday string
+	if err := db.QueryRow(`SELECT label, birthday FROM lists WHERE id = ?`, privateID).Scan(&label, &bday); err != nil {
+		t.Fatalf("read private list: %v", err)
+	}
+	if label != "Janet Doe" || bday != "06-20" {
+		t.Errorf("after PATCH label/birthday = %q/%q, want \"Janet Doe\"/06-20", label, bday)
+	}
+	_, resp = doJSON(t, me, http.MethodGet, "/api/private-lists/"+privateID, nil)
+	owner = resp["user"].(map[string]any)
+	if owner["displayName"] != "Janet Doe" || owner["birthday"] != "06-20" || owner["themeStyle"] != "lagoon" {
+		t.Errorf("edited owner = %v", owner)
 	}
 }

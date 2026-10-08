@@ -8,12 +8,15 @@
 		owner = null,
 		title,
 		accent = 'Wishlist',
-		children
+		children,
+		actions
 	}: {
 		owner?: string | null;
 		title?: string;
 		accent?: string | null;
 		children?: Snippet;
+		/** Extra buttons pinned in the top-right, before the theme toggle. */
+		actions?: Snippet;
 	} = $props();
 
 	const HATS: Record<string, string> = {
@@ -29,9 +32,10 @@
 
 <header class="pagehead">
 	<div class="headbtns">
+		{@render actions?.()}
 		<ThemeToggle />
 	</div>
-	<div class="titlerow">
+	<div class="titlerow" class:with-actions={actions}>
 		<span class="gift"><Icon name="gift" size={30} /></span>
 		<h1>
 			{#if owner}

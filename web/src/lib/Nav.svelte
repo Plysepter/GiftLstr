@@ -14,7 +14,7 @@
 	let current = $derived($route);
 	let isActive = $derived((p: string): boolean => {
 		if (p === '/') return current === '/';
-		if (p === '/lists') return current === '/lists' || current.startsWith('/list/');
+		if (p === '/lists') return current === '/lists' || current.startsWith('/list/') || current.startsWith('/private-list/');
 		return current.startsWith(p);
 	});
 	let u = $derived<User | null>($user);

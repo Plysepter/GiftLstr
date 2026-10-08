@@ -63,6 +63,17 @@ const BOB: ListsPageUser = {
   canView: true,
   claimedLabel: "",
 };
+const PRIVATE: ListsPageUser = {
+  id: "L1",
+  displayName: "Carol Cherry",
+  username: "",
+  birthday: "05-15",
+  myClaims: 1,
+  connected: false,
+  canView: true,
+  claimedLabel: "",
+  isPrivate: true,
+};
 
 function response(users: ListsPageUser[]): ListsPageResponse {
   return { users, page: 1, hasMore: false, total: users.length };
@@ -219,5 +230,154 @@ describe("ListsPage share-code connect", () => {
     await flush();
     expect(screen.getByText("No shared lists yet")).toBeTruthy();
     expect(within(container).queryByText("Alice Apple")).toBeNull();
+  });
+});
+
+describe("ListsPage private lists", () => {
+  function renderLists(users: ListsPageUser[]) {
+    mocks.api.mockImplementation((path: string) => {
+      if (path.startsWith("/api/lists")) return Promise.resolve(response(users));
+      if (path === "/api/private-lists") return Promise.resolve({ id: "L9" });
+      return Promise.resolve({});
+    });
+    return render(ListsPage);
+  }
+
+  function dlg(container: HTMLElement): HTMLDialogElement {
+    return container.querySelector("dialog.edit-dlg") as HTMLDialogElement;
+  }
+
+  function fillForm(container: HTMLElement): HTMLFormElement {
+    const form = dlg(container).querySelector("form") as HTMLFormElement;
+    fireEvent.input(container.querySelector("#plFirst") as HTMLInputElement, {
+      target: { value: " Carol " },
+    });
+    fireEvent.input(container.querySelector("#plLast") as HTMLInputElement, {
+      target: { value: "Cherry " },
+    });
+    fireEvent.change(
+      container.querySelector('select[aria-label="Birth month"]') as HTMLSelectElement,
+      {
+        target: { value: "05" },
+      },
+    );
+    fireEvent.change(
+      container.querySelector('select[aria-label="Birth day"]') as HTMLSelectElement,
+      {
+        target: { value: "15" },
+      },
+    );
+    return form;
+  }
+
+  it("chips private lists and links them to the private route", async () => {
+    const { container } = renderLists([PRIVATE]);
+    await flush();
+
+    expect(container.querySelector(".name-row .priv-chip")?.textContent).toBe("private");
+    expect(screen.getByRole("link", { name: "View list" }).getAttribute("href")).toBe(
+      "#/private-list/L1",
+    );
+  });
+
+  it("keeps regular users on the shared list route", async () => {
+    renderLists([ALICE]);
+    await flush();
+
+    expect(screen.getByRole("link", { name: "View list" }).getAttribute("href")).toBe("#/list/u1");
+  });
+
+  it("opens the create dialog from the + button", async () => {
+    const { container } = renderLists([]);
+    await flush();
+
+    expect(dlg(container).open).toBe(false);
+    await fireEvent.click(screen.getByRole("button", { name: "New private list" }));
+    await flush();
+
+    expect(dlg(container).open).toBe(true);
+    expect(screen.getByText("New private list")).toBeTruthy();
+  });
+
+  it("preselects a theme when the create dialog opens", async () => {
+    const { container } = renderLists([]);
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "New private list" }));
+    await flush();
+
+    const selected = container.querySelectorAll('.theme-grid button[aria-pressed="true"]');
+    expect(selected.length).toBe(1);
+  });
+
+  it("keeps the create button disabled until name and birthday are complete", async () => {
+    const { container } = renderLists([]);
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "New private list" }));
+    await flush();
+
+    const submit = screen.getByRole("button", { name: "Create list" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+
+    fireEvent.input(container.querySelector("#plFirst") as HTMLInputElement, {
+      target: { value: "Carol" },
+    });
+    fireEvent.input(container.querySelector("#plLast") as HTMLInputElement, {
+      target: { value: "Cherry" },
+    });
+    await flush();
+    expect(submit.disabled).toBe(true);
+
+    fireEvent.change(
+      container.querySelector('select[aria-label="Birth month"]') as HTMLSelectElement,
+      {
+        target: { value: "05" },
+      },
+    );
+    fireEvent.change(
+      container.querySelector('select[aria-label="Birth day"]') as HTMLSelectElement,
+      {
+        target: { value: "15" },
+      },
+    );
+    await flush();
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("POSTs the new private list with trimmed names, an MM-DD birthday and a theme", async () => {
+    const { container } = renderLists([]);
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "New private list" }));
+    await flush();
+    const form = fillForm(container);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Forest" }));
+    await fireEvent.submit(form);
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/private-lists", {
+      method: "POST",
+      body: { firstName: "Carol", lastName: "Cherry", birthday: "05-15", theme: "forest" },
+    });
+    expect(dlg(container).open).toBe(false);
+    expect(mocks.api).toHaveBeenCalledWith("/api/lists?page=1");
+  });
+
+  it("surfaces the create error and keeps the dialog open", async () => {
+    mocks.api.mockImplementation((path: string) => {
+      if (path.startsWith("/api/lists")) return Promise.resolve(response([]));
+      if (path === "/api/private-lists")
+        return Promise.reject(new Error("first and last name required"));
+      return Promise.resolve({});
+    });
+    const { container } = render(ListsPage);
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "New private list" }));
+    await flush();
+
+    await fireEvent.submit(fillForm(container));
+    await flush();
+
+    expect(screen.getByText("first and last name required")).toBeTruthy();
+    expect(dlg(container).open).toBe(true);
   });
 });

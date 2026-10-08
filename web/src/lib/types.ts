@@ -64,6 +64,11 @@ export interface ListsPageUser {
   canView: boolean;
   claimedLabel: string;
   /**
+   * True for the viewer's own private lists, which are inlined into the page
+   * sorted with regular users and opened at #/private-list/{id}.
+   */
+  isPrivate?: boolean;
+  /**
    * The viewer's private spend in cents on this user's active list. Only
    * present when the viewer has claimed something and spending tracking is
    * enabled.
@@ -76,6 +81,18 @@ export interface ListsPageResponse {
   page: number;
   hasMore: boolean;
   total: number;
+}
+
+/** One of the viewer's own private lists, served by /api/private-lists/{id}. */
+export interface PrivateListResponse {
+  user: Pick<User, "id" | "username" | "displayName" | "birthday" | "themeStyle" | "holidayReset">;
+  items: Item[];
+  isOwner: boolean;
+  /**
+   * The viewer's private spend in cents on the active items of exactly this
+   * list. Only present when spending tracking is enabled.
+   */
+  totalSpendCents?: number;
 }
 
 export interface ArchiveListSummary {
