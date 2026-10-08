@@ -130,6 +130,57 @@ test.describe('archive / reset flow', () => {
 		expect(privateTitles).toContain(unclaimedPrivate);
 		expect(privateTitles).not.toContain(unclaimedShared);
 	});
+
+	test('private lists roll over into the private archive tab', async ({ page, request }) => {
+		const stamp = Date.now();
+		const person = `Robin Reed${stamp}`;
+
+		// A private list for a person whose birthday has already passed.
+		const created = await request.post('/api/private-lists', {
+			headers: auth(ALICE),
+			data: { firstName: 'Robin', lastName: `Reed${stamp}`, birthday: '01-05' },
+		});
+		expect(created.ok()).toBeTruthy();
+		const listId = (await created.json()).id;
+
+		const keep = await request.post('/api/my/items', {
+			headers: auth(ALICE),
+			data: { title: `E2E Priv Keep ${stamp}`, listId },
+		});
+		const bought = await request.post('/api/my/items', {
+			headers: auth(ALICE),
+			data: { title: `E2E Priv Bought ${stamp}`, listId },
+		});
+		expect((await keep).ok()).toBeTruthy();
+		const boughtId = (await bought.json()).id;
+		expect((await request.put(`/api/items/${boughtId}/claim`, { headers: auth(ALICE) })).ok()).toBeTruthy();
+
+		// Force the reset as of the end of the year: the list's Jan 5 birthday
+		// is long past, so it rolls over.
+		const year = new Date().getUTCFullYear();
+		const res = await request.post('/api/e2e/archive', {
+			headers: auth(ALICE),
+			data: { date: `${year}-12-30` },
+		});
+		expect(res.ok()).toBeTruthy();
+
+		// The private tab lists it under the person's name, and the detail view
+		// reveals every idea on the rolled-over list.
+		await login(page, ALICE);
+		await page.goto('/#/archive');
+		await page.getByRole('tab', { name: 'Private lists' }).click();
+		const row = page.locator('.card', { hasText: person });
+		await expect(row).toBeVisible();
+		await row.getByRole('button', { name: 'View' }).click();
+		await expect(page.locator('.card', { hasText: `E2E Priv Keep ${stamp}` })).toBeVisible();
+		await expect(page.locator('.card', { hasText: `E2E Priv Bought ${stamp}` })).toBeVisible();
+
+		// Drop the fresh private list so later specs still see Alice's seeded
+		// connection-only totals.
+		const lists = await (await request.get('/api/lists?page=1', { headers: auth(ALICE) })).json();
+		const fresh = lists.users.find((u: { isPrivate?: boolean; displayName: string }) => u.isPrivate && u.displayName === person);
+		if (fresh) await request.delete(`/api/private-lists/${fresh.id}`, { headers: auth(ALICE) });
+	});
 });
 
 async function savePrivate(request: import('@playwright/test').APIRequestContext, token: string, ownerId: string, title: string): Promise<string> {

@@ -699,6 +699,99 @@ func archiveUserList(u *user, now time.Time) error {
 	return nil
 }
 
+// archivePrivateLists rolls over each of the user's private lists whose
+// birthday reset has passed: the old list is archived and a fresh private list
+// for the same person is created, carrying over its unclaimed ideas. Claimed
+// ideas (already bought) stay behind with the archived list, mirroring how the
+// ordinary active list rolls over.
+func archivePrivateLists(u *user, now time.Time) error {
+	rows, err := db.Query(`SELECT id, first_name, last_name, birthday, theme, created_at
+		FROM lists WHERE user_id = ? AND is_private = 1 AND archived_at IS NULL`, u.ID)
+	if err != nil {
+		return err
+	}
+	var lists []privateListRow
+	for rows.Next() {
+		var p privateListRow
+		if rows.Scan(&p.id, &p.firstName, &p.lastName, &p.birthday, &p.theme, &p.createdAt) == nil {
+			lists = append(lists, p)
+		}
+	}
+	rows.Close()
+	for _, p := range lists {
+		if !validMMDD(p.birthday) {
+			continue
+		}
+		reset := lastResetOccurrence(p.birthday, now)
+		// Same 8-day buffer as the active list so a birthday in a user's local
+		// timezone never rolls the list over a day early.
+		cutoff := reset.AddDate(0, 0, 8)
+		if !now.After(cutoff) {
+			continue
+		}
+		created, err := time.Parse("2006-01-02 15:04:05", p.createdAt)
+		if err != nil || !created.Before(cutoff) {
+			continue // a list created after the cutoff is already the fresh one
+		}
+		if err := rolloverPrivateList(u.ID, p, reset); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// privateListRow is one live private list as read by the archive loop.
+type privateListRow struct {
+	id, firstName, lastName, birthday, theme, createdAt string
+}
+
+// rolloverPrivateList archives a single private list and creates its
+// replacement for the next occurrence, copying unclaimed, non-removed ideas.
+func rolloverPrivateList(userID string, p privateListRow, reset time.Time) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE lists SET archived_at = datetime('now'), label = ? WHERE id = ? AND archived_at IS NULL`,
+		resetLabel(resetBirthday, reset), p.id); err != nil {
+		return err
+	}
+	newListID := newID()
+	if _, err := tx.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme)
+		VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
+		newListID, userID, strings.TrimSpace(p.firstName+" "+p.lastName), p.firstName, p.lastName, p.birthday, p.theme); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT i.id, i.title, i.url, i.notes, i.sort_order, i.created_by_id
+		FROM items i WHERE i.list_id = ? AND i.removed_at IS NULL
+		AND NOT EXISTS(SELECT 1 FROM claims c WHERE c.item_id = i.id)`, p.id)
+	if err != nil {
+		return err
+	}
+	type carried struct {
+		title, url, notes, createdBy string
+		sort                         int
+	}
+	var carry []carried
+	for rows.Next() {
+		var id string
+		var c carried
+		if rows.Scan(&id, &c.title, &c.url, &c.notes, &c.sort, &c.createdBy) == nil {
+			carry = append(carry, c)
+		}
+	}
+	rows.Close()
+	for _, c := range carry {
+		if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id, created_by_id)
+			VALUES (?, ?, ?, ?, ?, ?, 'private', '', '', ?)`,
+			newID(), newListID, c.title, c.url, c.notes, c.sort, c.createdBy); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func archiveLoop() {
 	runAll := func() {
 		rows, err := db.Query(`SELECT ` + userCols + ` FROM users`)
@@ -723,6 +816,9 @@ func archiveLoop() {
 		for _, u := range us {
 			if err := archiveUserList(u, now); err != nil {
 				log.Printf("archive user %s: %v", u.Username, err)
+			}
+			if err := archivePrivateLists(u, now); err != nil {
+				log.Printf("archive private lists for %s: %v", u.Username, err)
 			}
 		}
 	}

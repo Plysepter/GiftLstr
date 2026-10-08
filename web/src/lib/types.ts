@@ -101,6 +101,11 @@ export interface ArchiveListSummary {
   archivedAt: string;
   itemCount: number;
   claimedCount: number;
+  /** Present on rolled-over private lists: the person it was created for. */
+  firstName?: string;
+  lastName?: string;
+  birthday?: string;
+  theme?: string;
 }
 
 export interface ArchiveIndexResponse {
@@ -114,6 +119,10 @@ export interface ArchiveDetailResponse {
   id: string;
   label: string;
   items: Item[];
+  /** Present on a rolled-over private list. */
+  firstName?: string;
+  lastName?: string;
+  isPrivate?: boolean;
 }
 
 export interface AdminUser {

@@ -37,9 +37,16 @@
 	});
 
 	let items = $derived(data ? data.items.filter((i) => !i.removedAt || i.claimed) : []);
+	let title = $derived(
+		data
+			? data.isPrivate
+				? [data.firstName, data.lastName].filter(Boolean).join(' ') || data.label
+				: data.label
+			: '…'
+	);
 </script>
 
-<PageHeader title={data?.label ?? '…'}>
+<PageHeader title={title}>
 	<a href="#/archive" class="back-link">
 		<Icon name="chevron-left" size={16} strokeWidth={2.2} />
 		Archive
@@ -52,7 +59,11 @@
 	<ErrorState message={error} onRetry={() => void load()} />
 {/if}
 
-<p class="muted">Read-only view of what was received and by who.</p>
+{#if data?.isPrivate}
+	<p class="muted">{data.label} · read-only view of what rolled over from this private list.</p>
+{:else}
+	<p class="muted">Read-only view of what was received and by who.</p>
+{/if}
 
 <ul class="items">
 	{#each items as item (item.id)}
@@ -82,12 +93,21 @@
 	{/each}
 </ul>
 
-<EmptyState
-	icon="gift"
-	title="Nothing received from this list"
-	hint="No items were claimed before this list wrapped up."
-	ready={!loading && !error && !network.offline && data !== null && items.length === 0}
-/>
+{#if data?.isPrivate}
+	<EmptyState
+		icon="gift"
+		title="Nothing was on this list"
+		hint="This private list wrapped up with no ideas left on it."
+		ready={!loading && !error && !network.offline && items.length === 0}
+	/>
+{:else}
+	<EmptyState
+		icon="gift"
+		title="Nothing received from this list"
+		hint="No items were claimed before this list wrapped up."
+		ready={!loading && !error && !network.offline && data !== null && items.length === 0}
+	/>
+{/if}
 
 <style>
 	.back-link {

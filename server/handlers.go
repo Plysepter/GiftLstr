@@ -167,6 +167,17 @@ func handleE2EArchive(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Private lists roll over on their own person's birthday, so backdate each
+	// live one and run the same flow against the simulated date.
+	if _, err := db.Exec(`UPDATE lists SET created_at = datetime(?) WHERE user_id = ? AND is_private = 1 AND archived_at IS NULL`,
+		now.AddDate(-1, 0, 0).UTC().Format("2006-01-02 15:04:05"), u.ID); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := archivePrivateLists(u, now.UTC()); err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1703,6 +1714,11 @@ type archivedList struct {
 	ArchivedAt   string `json:"archivedAt"`
 	ItemCount    int    `json:"itemCount"`
 	ClaimedCount int    `json:"claimedCount"`
+	// Private-list only: the person this rolled-over list was created for.
+	FirstName string `json:"firstName,omitempty"`
+	LastName  string `json:"lastName,omitempty"`
+	Birthday  string `json:"birthday,omitempty"`
+	Theme     string `json:"theme,omitempty"`
 }
 
 type archiveIndexResponse struct {
@@ -1712,21 +1728,36 @@ type archiveIndexResponse struct {
 	Total   int            `json:"total"`
 }
 
+// handleArchiveIndex lists the caller's archived lists. The default tab shows
+// rolled-over ordinary lists; ?type=private shows the private lists that have
+// rolled over on their person's birthday instead.
 func handleArchiveIndex(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
+	private := r.URL.Query().Get("type") == "private"
+	isPrivate := 0
+	if private {
+		isPrivate = 1
+	}
 	const per = 20
 	page, offset := pageParams(r, per)
 	var total int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM lists WHERE user_id = ? AND archived_at IS NOT NULL`, u.ID).Scan(&total); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM lists WHERE user_id = ? AND is_private = ? AND archived_at IS NOT NULL`, u.ID, isPrivate).Scan(&total); err != nil {
 		fail(w, 500, "query error")
 		return
 	}
+	// Rolled-over private lists reveal every idea; ordinary archives only
+	// reveal public items plus anything that was claimed.
+	countExpr := `(SELECT COUNT(*) FROM items i WHERE i.list_id = l.id AND i.removed_at IS NULL AND (i.visibility = 'public' OR EXISTS(SELECT 1 FROM claims c1 WHERE c1.item_id = i.id)))`
+	if private {
+		countExpr = `(SELECT COUNT(*) FROM items i WHERE i.list_id = l.id AND i.removed_at IS NULL)`
+	}
 	rows, err := db.Query(`
-		SELECT l.id, l.label, l.archived_at,
-			(SELECT COUNT(*) FROM items i WHERE i.list_id = l.id AND i.removed_at IS NULL AND (i.visibility = 'public' OR EXISTS(SELECT 1 FROM claims c1 WHERE c1.item_id = i.id))),
-			(SELECT COUNT(*) FROM items i JOIN claims c ON c.item_id = i.id WHERE i.list_id = l.id)
-		FROM lists l WHERE l.user_id = ? AND l.archived_at IS NOT NULL ORDER BY l.archived_at DESC LIMIT ? OFFSET ?`,
-		u.ID, per, offset)
+		SELECT l.id, l.label, l.archived_at, `+countExpr+`,
+			(SELECT COUNT(*) FROM items i JOIN claims c ON c.item_id = i.id WHERE i.list_id = l.id),
+			l.first_name, l.last_name, l.birthday, l.theme
+		FROM lists l WHERE l.user_id = ? AND l.is_private = ? AND l.archived_at IS NOT NULL
+		ORDER BY l.archived_at DESC, l.rowid DESC LIMIT ? OFFSET ?`,
+		u.ID, isPrivate, per, offset)
 	if err != nil {
 		fail(w, 500, "query error")
 		return
@@ -1735,7 +1766,8 @@ func handleArchiveIndex(w http.ResponseWriter, r *http.Request) {
 	lists := []archivedList{}
 	for rows.Next() {
 		var a archivedList
-		if rows.Scan(&a.ID, &a.Label, &a.ArchivedAt, &a.ItemCount, &a.ClaimedCount) != nil {
+		if rows.Scan(&a.ID, &a.Label, &a.ArchivedAt, &a.ItemCount, &a.ClaimedCount,
+			&a.FirstName, &a.LastName, &a.Birthday, &a.Theme) != nil {
 			continue
 		}
 		lists = append(lists, a)
@@ -1747,6 +1779,10 @@ type archiveDetailResponse struct {
 	ID    string     `json:"id"`
 	Label string     `json:"label"`
 	Items []listItem `json:"items"`
+	// Private-list only: the person this rolled-over list was created for.
+	FirstName string `json:"firstName,omitempty"`
+	LastName  string `json:"lastName,omitempty"`
+	IsPrivate bool   `json:"isPrivate,omitempty"`
 }
 
 func handleArchiveList(w http.ResponseWriter, r *http.Request) {
@@ -1756,26 +1792,36 @@ func handleArchiveList(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad id")
 		return
 	}
-	var ownerID string
-	var label string
-	err = db.QueryRow(`SELECT user_id, label FROM lists WHERE id = ? AND archived_at IS NOT NULL`, listID).Scan(&ownerID, &label)
+	var ownerID, label, firstName, lastName string
+	var isPrivate bool
+	err = db.QueryRow(`SELECT user_id, label, is_private, first_name, last_name FROM lists WHERE id = ? AND archived_at IS NOT NULL`, listID).
+		Scan(&ownerID, &label, &isPrivate, &firstName, &lastName)
 	if err != nil || ownerID != u.ID {
 		fail(w, 404, "archive not found")
 		return
 	}
 	// The archived view reveals claimed items from the private and shared lists
 	// alongside the owner's own items; unclaimed private (other people's saved
-	// ideas) and unclaimed shared items are not shown.
-	items, err := itemRows("i.list_id = ? AND (i.visibility = 'public' OR EXISTS(SELECT 1 FROM claims c2 WHERE c2.item_id = i.id))", listID)
+	// ideas) and unclaimed shared items are not shown. A rolled-over private
+	// list belongs to the caller alone, so every idea on it is shown.
+	filter := "i.list_id = ? AND (i.visibility = 'public' OR EXISTS(SELECT 1 FROM claims c2 WHERE c2.item_id = i.id))"
+	if isPrivate {
+		filter = "i.list_id = ?"
+	}
+	items, err := itemRows(filter, listID)
 	if err != nil {
 		fail(w, 500, "query error")
 		return
 	}
-	// Archived view shows who claimed what.
+	// Archived view shows who claimed what. A private list's only possible
+	// claimer is its owner, so the name would just be their own account.
 	for i := range items {
 		items[i].ClaimedUserID = ""
+		if isPrivate {
+			items[i].ClaimedByName = nil
+		}
 	}
-	writeJSON(w, 200, archiveDetailResponse{ID: listID, Label: label, Items: items})
+	writeJSON(w, 200, archiveDetailResponse{ID: listID, Label: label, Items: items, FirstName: firstName, LastName: lastName, IsPrivate: isPrivate})
 }
 
 // ---------- profile / connections / admin ----------

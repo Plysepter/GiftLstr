@@ -372,6 +372,92 @@ func TestArchiveUserListWithNoBirthday(t *testing.T) {
 	}
 }
 
+func TestArchivePrivateListsRollsOver(t *testing.T) {
+	u := seedUser(t, "c_arch_priv", "arch_priv_user", false)
+
+	listID := newID()
+	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme, created_at)
+		VALUES (?, ?, 'Jamie Doe', 1, 'Jamie', 'Doe', '07-01', 'ember', '2026-06-01 00:00:00')`, listID, u.ID); err != nil {
+		t.Fatalf("insert private list: %v", err)
+	}
+	addItemRow(t, listID, "unclaimed idea")
+	claimed := addItemRow(t, listID, "bought idea")
+	removed := addItemRow(t, listID, "removed idea")
+	db.Exec(`INSERT INTO claims (item_id, user_id) VALUES (?, ?)`, claimed, u.ID)
+	db.Exec(`UPDATE items SET removed_at = datetime('now') WHERE id = ?`, removed)
+
+	now := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC) // > 8 days after Jul 1
+	if err := archivePrivateLists(u, now); err != nil {
+		t.Fatalf("archivePrivateLists: %v", err)
+	}
+
+	// Old list archived with the birthday label.
+	var label string
+	var archivedAt any
+	if err := db.QueryRow(`SELECT label, archived_at FROM lists WHERE id = ?`, listID).Scan(&label, &archivedAt); err != nil {
+		t.Fatal(err)
+	}
+	if label != "2026 Birthday" || archivedAt == nil {
+		t.Errorf("archived private list = (%q, %v), want (2026 Birthday, set)", label, archivedAt)
+	}
+
+	// A fresh private list for the same person carries only the unclaimed idea.
+	var freshID, firstName, lastName, birthday, theme string
+	if err := db.QueryRow(`SELECT id, first_name, last_name, birthday, theme FROM lists
+		WHERE user_id = ? AND is_private = 1 AND archived_at IS NULL`, u.ID).
+		Scan(&freshID, &firstName, &lastName, &birthday, &theme); err != nil {
+		t.Fatalf("fresh private list: %v", err)
+	}
+	if freshID == listID {
+		t.Fatal("expected a fresh private list")
+	}
+	if firstName != "Jamie" || lastName != "Doe" || birthday != "07-01" || theme != "ember" {
+		t.Errorf("fresh list person = %q %q %q %q, want Jamie Doe 07-01 ember", firstName, lastName, birthday, theme)
+	}
+	rows, _ := db.Query(`SELECT title FROM items WHERE list_id = ? ORDER BY title`, freshID)
+	defer rows.Close()
+	var titles []string
+	for rows.Next() {
+		var s string
+		rows.Scan(&s)
+		titles = append(titles, s)
+	}
+	if len(titles) != 1 || titles[0] != "unclaimed idea" {
+		t.Errorf("carried items = %v, want only [unclaimed idea]", titles)
+	}
+
+	// Running again is a no-op: the fresh list was created after the cutoff.
+	if err := archivePrivateLists(u, now); err != nil {
+		t.Fatalf("second archivePrivateLists: %v", err)
+	}
+	var live int
+	db.QueryRow(`SELECT COUNT(*) FROM lists WHERE user_id = ? AND is_private = 1 AND archived_at IS NULL`, u.ID).Scan(&live)
+	if live != 1 {
+		t.Errorf("live private lists = %d, want 1", live)
+	}
+}
+
+func TestArchivePrivateListsSkipsBeforeCutoff(t *testing.T) {
+	u := seedUser(t, "c_arch_priv_skip", "arch_priv_skip", false)
+	listID := newID()
+	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, created_at)
+		VALUES (?, ?, 'Jamie Doe', 1, 'Jamie', 'Doe', '07-01', '2026-06-01 00:00:00')`, listID, u.ID); err != nil {
+		t.Fatalf("insert private list: %v", err)
+	}
+
+	now := time.Date(2026, time.July, 4, 12, 0, 0, 0, time.UTC) // only 3 days after reset
+	if err := archivePrivateLists(u, now); err != nil {
+		t.Fatalf("archivePrivateLists: %v", err)
+	}
+	var archived any
+	if err := db.QueryRow(`SELECT archived_at FROM lists WHERE id = ?`, listID).Scan(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if archived != nil {
+		t.Error("private list should not archive before the cutoff")
+	}
+}
+
 func TestClaimConflictReturns409(t *testing.T) {
 	owner := seedUser(t, "c_race_owner", "race_owner", false)
 	viewerA := seedUser(t, "c_race_a", "race_a", false)

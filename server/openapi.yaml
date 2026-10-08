@@ -242,6 +242,18 @@ components:
           type: integer
         claimedCount:
           type: integer
+        firstName:
+          type: string
+          description: For a rolled-over private list, the person's first name.
+        lastName:
+          type: string
+          description: For a rolled-over private list, the person's last name.
+        birthday:
+          type: string
+          description: For a rolled-over private list, the person's MM-DD birthday.
+        theme:
+          type: string
+          description: For a rolled-over private list, its theme style.
       required: [id, label, archivedAt, itemCount, claimedCount]
     ArchiveIndexResponse:
       type: object
@@ -269,6 +281,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Item'
+        firstName:
+          type: string
+          description: For a rolled-over private list, the person's first name.
+        lastName:
+          type: string
+          description: For a rolled-over private list, the person's last name.
+        isPrivate:
+          type: boolean
+          description: True when the archived list was a private list.
       required: [id, label, items]
     AdminUser:
       type: object
@@ -964,8 +985,19 @@ paths:
   /api/archive:
     get:
       summary: List your archived lists (paginated)
+      description: >
+        Without a type this returns ordinary rolled-over lists. With
+        type=private it returns the private lists that have rolled over on their
+        person's birthday.
       parameters:
         - $ref: '#/components/parameters/page'
+        - name: type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [private]
+          description: Set to private to list rolled-over private lists instead.
       responses:
         '200':
           description: Archived lists.

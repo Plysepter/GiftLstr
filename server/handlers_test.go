@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -874,6 +875,50 @@ func TestArchiveIndexPagination(t *testing.T) {
 	}
 	if resp["hasMore"] != false || resp["total"] != float64(25) || resp["page"] != float64(2) {
 		t.Errorf("unexpected page 2 meta: %v", resp)
+	}
+}
+
+func TestArchivePrivateTabAndDetail(t *testing.T) {
+	u := seedUser(t, "c_arch_priv_tab", "arch_priv_tab", false)
+
+	listID := newID()
+	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme, created_at)
+		VALUES (?, ?, 'Robin Reed', 1, 'Robin', 'Reed', '07-01', 'aurora', '2026-06-01 00:00:00')`, listID, u.ID); err != nil {
+		t.Fatalf("insert private list: %v", err)
+	}
+	addItemRow(t, listID, "secret idea")
+	if err := archivePrivateLists(u, time.Date(2026, time.July, 15, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("archivePrivateLists: %v", err)
+	}
+
+	// The default tab stays limited to ordinary archives.
+	w, resp := doJSON(t, u, http.MethodGet, "/api/archive", nil)
+	mustStatus(t, w, http.StatusOK)
+	if n := len(resp["lists"].([]any)); n != 0 {
+		t.Errorf("default archive tab should not show private lists, got %d", n)
+	}
+
+	// The private tab lists the rolled-over list with the person's name.
+	w, resp = doJSON(t, u, http.MethodGet, "/api/archive?type=private", nil)
+	mustStatus(t, w, http.StatusOK)
+	lists := resp["lists"].([]any)
+	if len(lists) != 1 {
+		t.Fatalf("expected 1 rolled-over private list, got %d", len(lists))
+	}
+	entry := lists[0].(map[string]any)
+	if entry["firstName"] != "Robin" || entry["lastName"] != "Reed" {
+		t.Errorf("private archive entry = %v", entry)
+	}
+
+	// Detail reveals every idea on the owner's private list.
+	w, resp = doJSON(t, u, http.MethodGet, fmt.Sprintf("/api/archive/%s", listID), nil)
+	mustStatus(t, w, http.StatusOK)
+	if resp["isPrivate"] != true {
+		t.Errorf("detail isPrivate = %v, want true", resp["isPrivate"])
+	}
+	items := resp["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["title"] != "secret idea" {
+		t.Errorf("private archive items = %v", items)
 	}
 }
 
