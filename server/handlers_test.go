@@ -922,6 +922,93 @@ func TestArchivePrivateTabAndDetail(t *testing.T) {
 	}
 }
 
+// TestArchivePrivateListOnDemand covers the manual archive endpoint: it
+// mirrors the birthday rollover (archiving under a "First Last Manual Archive"
+// label) but leaves the fresh list's details and unclaimed ideas in place.
+func TestArchivePrivateListOnDemand(t *testing.T) {
+	owner := seedUser(t, "c_priv_arch_owner", "priv_arch_owner", false)
+	stranger := strangerUser(t)
+
+	w, resp := doJSON(t, owner, http.MethodPost, "/api/private-lists",
+		body{"firstName": "Robin", "lastName": "Reed", "birthday": "07-01", "theme": "forest"})
+	mustStatus(t, w, http.StatusCreated)
+	oldID, _ := resp["id"].(string)
+
+	addItem := func(title string) string {
+		w, resp := doJSON(t, owner, http.MethodPost, "/api/my/items", body{"title": title, "listId": oldID})
+		mustStatus(t, w, http.StatusCreated)
+		id, _ := resp["id"].(string)
+		return id
+	}
+	addItem("Keep me")
+	boughtID := addItem("Bought")
+	removedID := addItem("Removed")
+	w, _ = doJSON(t, owner, http.MethodPut, fmt.Sprintf("/api/items/%s/claim", boughtID), nil)
+	mustStatus(t, w, http.StatusOK)
+	w, _ = doJSON(t, owner, http.MethodDelete, fmt.Sprintf("/api/my/items/%s", removedID), nil)
+	mustStatus(t, w, http.StatusOK)
+
+	// Only the owner may archive.
+	w, _ = doJSON(t, stranger, http.MethodPost, fmt.Sprintf("/api/private-lists/%s/archive", oldID), nil)
+	mustStatus(t, w, http.StatusNotFound)
+
+	w, resp = doJSON(t, owner, http.MethodPost, fmt.Sprintf("/api/private-lists/%s/archive", oldID), nil)
+	mustStatus(t, w, http.StatusOK)
+	newID, _ := resp["id"].(string)
+	if newID == "" || newID == oldID {
+		t.Fatalf("archive returned id %q, want a fresh id", newID)
+	}
+
+	// The old list is archived under the manual label and drops out of live use.
+	var label string
+	var archivedAt sql.NullString
+	if err := db.QueryRow(`SELECT label, archived_at FROM lists WHERE id = ?`, oldID).Scan(&label, &archivedAt); err != nil {
+		t.Fatalf("read archived list: %v", err)
+	}
+	if label != "Robin Reed Manual Archive" || !archivedAt.Valid {
+		t.Errorf("archived list label/flag = %q/%v", label, archivedAt)
+	}
+	w, _ = doJSON(t, owner, http.MethodPost, fmt.Sprintf("/api/private-lists/%s/archive", oldID), nil)
+	mustStatus(t, w, http.StatusNotFound)
+
+	// The fresh list keeps the person's details and carries only the unclaimed,
+	// non-removed idea.
+	var firstName, lastName, birthday, theme string
+	var freshArchived sql.NullString
+	if err := db.QueryRow(`SELECT first_name, last_name, birthday, theme, archived_at FROM lists WHERE id = ?`, newID).
+		Scan(&firstName, &lastName, &birthday, &theme, &freshArchived); err != nil {
+		t.Fatalf("read fresh list: %v", err)
+	}
+	if firstName != "Robin" || lastName != "Reed" || birthday != "07-01" || theme != "forest" || freshArchived.Valid {
+		t.Errorf("fresh list = %q/%q/%q/%q archived=%v", firstName, lastName, birthday, theme, freshArchived)
+	}
+	var carried []string
+	rows, err := db.Query(`SELECT title FROM items WHERE list_id = ?`, newID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var title string
+		rows.Scan(&title)
+		carried = append(carried, title)
+	}
+	if len(carried) != 1 || carried[0] != "Keep me" {
+		t.Errorf("fresh list items = %v, want [Keep me]", carried)
+	}
+
+	// The private archive tab shows the archived list.
+	_, resp = doJSON(t, owner, http.MethodGet, "/api/archive?type=private", nil)
+	lists := resp["lists"].([]any)
+	if len(lists) != 1 {
+		t.Fatalf("expected 1 private archive entry, got %d", len(lists))
+	}
+	entry := lists[0].(map[string]any)
+	if entry["id"] != oldID || entry["firstName"] != "Robin" || entry["label"] != "Robin Reed Manual Archive" {
+		t.Errorf("private archive entry = %v", entry)
+	}
+}
+
 func TestConnectionsAdminOnly(t *testing.T) {
 	a := seedUser(t, "c_conn_a", "conn_a", false)
 	b := seedUser(t, "c_conn_b", "conn_b", false)

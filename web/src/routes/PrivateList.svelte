@@ -279,6 +279,28 @@
 		}
 	}
 
+	function confirmArchiveList(): void {
+		confirmState = {
+			title: 'Archive this list?',
+			message: `Archive ${displayName}'s list? Claimed ideas stay in the archive and the rest carry over to a fresh list.`,
+			confirmLabel: 'Archive list',
+			action: async () => {
+				await archiveList();
+				confirmState = null;
+			}
+		};
+	}
+
+	async function archiveList(): Promise<void> {
+		error = '';
+		try {
+			const res = await api<{ id: string }>(`/api/private-lists/${listId}/archive`, { method: 'POST' });
+			window.location.hash = `#/private-list/${res.id}`;
+		} catch (err) {
+			error = err instanceof Error ? err.message : String(err);
+		}
+	}
+
 	// ---------- reordering ----------
 	interface DragCtx {
 		index: number;
@@ -556,11 +578,14 @@
 					>
 						<Icon name="edit" size={15} /> Edit list
 					</button>
+					<button class="secondary archive-list-btn" type="button" disabled={network.offline} onclick={confirmArchiveList}>
+						<Icon name="archive" size={15} /> Archive {firstName}
+					</button>
 					<button class="danger delete-list-btn" type="button" disabled={network.offline} onclick={confirmDeleteList}>
-						<Icon name="trash" size={15} /> Delete this list
+						<Icon name="trash" size={15} /> Delete {firstName}
 					</button>
 				</div>
-				<span class="hint muted">Editing updates the name, birthday, or theme. Delete hard-removes every idea and claim on it.</span>
+				<span class="hint muted">Editing updates the name, birthday, or theme. Archive moves it to the archive and starts a fresh list; delete hard-removes every idea and claim on it.</span>
 			</div>
 
 			<Composer onadd={(i) => addItem(i)} label="Add gift idea" />
@@ -741,6 +766,7 @@
 		max-width: 34rem;
 	}
 	.edit-list-btn,
+	.archive-list-btn,
 	.delete-list-btn {
 		display: inline-flex;
 		align-items: center;

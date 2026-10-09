@@ -54,6 +54,7 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/private-lists/{id}", rl.rateLimit(auth(handlePrivateList)))
 	mux.HandleFunc("PATCH /api/private-lists/{id}", rl.rateLimit(auth(handleUpdatePrivateList)))
 	mux.HandleFunc("DELETE /api/private-lists/{id}", rl.rateLimit(auth(handleDeletePrivateList)))
+	mux.HandleFunc("POST /api/private-lists/{id}/archive", rl.rateLimit(auth(handleArchivePrivateList)))
 	mux.HandleFunc("GET /api/users/{id}/list", rl.rateLimit(auth(handleUserList)))
 	mux.HandleFunc("POST /api/users/{id}/private-items", rl.rateLimit(auth(handleAddPrivateIdea)))
 	mux.HandleFunc("DELETE /api/users/{id}/private-items/{itemID}", rl.rateLimit(auth(handleDeletePrivateIdea)))
@@ -884,6 +885,34 @@ func handleDeletePrivateList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+// handleArchivePrivateList archives one of the caller's private lists on
+// demand, mirroring the automatic birthday rollover: the archived list keeps
+// its claimed ideas and a fresh private list carries over the unclaimed,
+// non-removed ones. The response returns the fresh list's id.
+func handleArchivePrivateList(w http.ResponseWriter, r *http.Request) {
+	u := userFrom(r)
+	listID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	var p privateListRow
+	if err := db.QueryRow(`SELECT id, first_name, last_name, birthday, theme, created_at
+		FROM lists WHERE id = ? AND user_id = ? AND is_private = 1 AND archived_at IS NULL`, listID, u.ID).
+		Scan(&p.id, &p.firstName, &p.lastName, &p.birthday, &p.theme, &p.createdAt); err != nil {
+		fail(w, 404, "private list not found")
+		return
+	}
+	label := strings.TrimSpace(p.firstName+" "+p.lastName) + " Manual Archive"
+	newListID, err := rolloverPrivateList(u.ID, p, label)
+	if err != nil {
+		log.Printf("archive private list: %v", err)
+		fail(w, 500, "archive failed")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"id": newListID})
 }
 
 // ownedPrivateList reports whether listID is one of userID's live private

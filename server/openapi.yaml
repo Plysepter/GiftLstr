@@ -465,7 +465,8 @@ paths:
       description: >
         Creates a private list of gift ideas for a person (first name, last
         name, birthday) owned solely by the caller. Private lists are never
-        shared, never archived, and appear inline on /api/lists.
+        shared and appear inline on /api/lists; they archive around the
+        person's birthday or on request.
       requestBody:
         required: true
         content:
@@ -588,6 +589,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Ok'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Private list not found (or not yours).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/private-lists/{id}/archive:
+    post:
+      summary: Archive one of your private lists
+      description: >
+        Archives the list immediately under a "First Last Manual Archive"
+        label, mirroring the automatic birthday rollover: claimed ideas stay
+        behind with the archived list and a fresh private list carries over the
+        unclaimed, non-removed ones. Returns the fresh list's id.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      responses:
+        '200':
+          description: Archived.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    description: UUID of the fresh replacement private list.
+                required: [id]
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':

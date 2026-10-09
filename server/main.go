@@ -733,7 +733,7 @@ func archivePrivateLists(u *user, now time.Time) error {
 		if err != nil || !created.Before(cutoff) {
 			continue // a list created after the cutoff is already the fresh one
 		}
-		if err := rolloverPrivateList(u.ID, p, reset); err != nil {
+		if _, err := rolloverPrivateList(u.ID, p, resetLabel(resetBirthday, reset)); err != nil {
 			return err
 		}
 	}
@@ -745,29 +745,30 @@ type privateListRow struct {
 	id, firstName, lastName, birthday, theme, createdAt string
 }
 
-// rolloverPrivateList archives a single private list and creates its
-// replacement for the next occurrence, copying unclaimed, non-removed ideas.
-func rolloverPrivateList(userID string, p privateListRow, reset time.Time) error {
+// rolloverPrivateList archives a single private list under the given label and
+// creates its replacement, copying unclaimed, non-removed ideas. It returns the
+// id of the fresh list.
+func rolloverPrivateList(userID string, p privateListRow, label string) (string, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`UPDATE lists SET archived_at = datetime('now'), label = ? WHERE id = ? AND archived_at IS NULL`,
-		resetLabel(resetBirthday, reset), p.id); err != nil {
-		return err
+		label, p.id); err != nil {
+		return "", err
 	}
 	newListID := newID()
 	if _, err := tx.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme)
 		VALUES (?, ?, ?, 1, ?, ?, ?, ?)`,
 		newListID, userID, strings.TrimSpace(p.firstName+" "+p.lastName), p.firstName, p.lastName, p.birthday, p.theme); err != nil {
-		return err
+		return "", err
 	}
 	rows, err := tx.Query(`SELECT i.id, i.title, i.url, i.notes, i.sort_order, i.created_by_id
 		FROM items i WHERE i.list_id = ? AND i.removed_at IS NULL
 		AND NOT EXISTS(SELECT 1 FROM claims c WHERE c.item_id = i.id)`, p.id)
 	if err != nil {
-		return err
+		return "", err
 	}
 	type carried struct {
 		title, url, notes, createdBy string
@@ -786,10 +787,13 @@ func rolloverPrivateList(userID string, p privateListRow, reset time.Time) error
 		if _, err := tx.Exec(`INSERT INTO items (id, list_id, title, url, notes, sort_order, visibility, suggested_by, suggested_by_id, created_by_id)
 			VALUES (?, ?, ?, ?, ?, ?, 'private', '', '', ?)`,
 			newID(), newListID, c.title, c.url, c.notes, c.sort, c.createdBy); err != nil {
-			return err
+			return "", err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return newListID, nil
 }
 
 func archiveLoop() {

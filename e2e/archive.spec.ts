@@ -181,6 +181,48 @@ test.describe('archive / reset flow', () => {
 		const fresh = lists.users.find((u: { isPrivate?: boolean; displayName: string }) => u.isPrivate && u.displayName === person);
 		if (fresh) await request.delete(`/api/private-lists/${fresh.id}`, { headers: auth(ALICE) });
 	});
+
+	test('a private list can be archived on demand from its page', async ({ page, request }) => {
+		const stamp = Date.now();
+		const person = `Robin Reed${stamp}`;
+
+		const created = await request.post('/api/private-lists', {
+			headers: auth(ALICE),
+			data: { firstName: 'Robin', lastName: `Reed${stamp}`, birthday: '01-05' },
+		});
+		expect(created.ok()).toBeTruthy();
+		const listId = (await created.json()).id;
+
+		await request.post('/api/my/items', {
+			headers: auth(ALICE),
+			data: { title: `E2E Manual Keep ${stamp}`, listId },
+		});
+		const bought = await request.post('/api/my/items', {
+			headers: auth(ALICE),
+			data: { title: `E2E Manual Bought ${stamp}`, listId },
+		});
+		const boughtId = (await bought.json()).id;
+		expect((await request.put(`/api/items/${boughtId}/claim`, { headers: auth(ALICE) })).ok()).toBeTruthy();
+
+		await login(page, ALICE);
+		await page.goto(`/#/private-list/${listId}`);
+		await page.getByRole('button', { name: 'Archive Robin' }).click();
+		await page.getByRole('button', { name: 'Archive list' }).click();
+
+		// The page opens the fresh replacement, carrying only the unclaimed idea.
+		await expect(page.locator('.card', { hasText: `E2E Manual Keep ${stamp}` })).toBeVisible();
+		await expect(page.locator('.card', { hasText: `E2E Manual Bought ${stamp}` })).toHaveCount(0);
+
+		// The archived copy lands in the private archive tab under the manual label.
+		const index = await (await request.get('/api/archive?type=private', { headers: auth(ALICE) })).json();
+		const archived = index.lists.find((l: { id: string }) => l.id === listId);
+		expect(archived?.label).toBe(`${person} Manual Archive`);
+
+		// Drop the fresh list so later specs still see Alice's seeded totals.
+		const lists = await (await request.get('/api/lists?page=1', { headers: auth(ALICE) })).json();
+		const fresh = lists.users.find((u: { isPrivate?: boolean; displayName: string }) => u.isPrivate && u.displayName === person);
+		if (fresh) await request.delete(`/api/private-lists/${fresh.id}`, { headers: auth(ALICE) });
+	});
 });
 
 async function savePrivate(request: import('@playwright/test').APIRequestContext, token: string, ownerId: string, title: string): Promise<string> {

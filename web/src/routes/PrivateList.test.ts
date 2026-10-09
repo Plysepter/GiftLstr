@@ -402,7 +402,7 @@ describe("PrivateList delete", () => {
     render(PrivateList, { props: { listId: LIST_ID } });
     await flush();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Delete this list" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete Carol" }));
     await flush();
 
     await fireEvent.click(screen.getByRole("button", { name: "Delete list" }));
@@ -417,7 +417,7 @@ describe("PrivateList delete", () => {
     render(PrivateList, { props: { listId: LIST_ID } });
     await flush();
 
-    await fireEvent.click(screen.getByRole("button", { name: "Delete this list" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete Carol" }));
     await flush();
     await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await flush();
@@ -426,5 +426,44 @@ describe("PrivateList delete", () => {
       method: "DELETE",
     });
     expect(window.location.hash).not.toBe("#/lists");
+  });
+});
+
+describe("PrivateList archive", () => {
+  it("archives the list after the confirmation dialog and opens the fresh one", async () => {
+    mocks.api.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path === `/api/private-lists/${LIST_ID}` && (!opts?.method || opts.method === "GET"))
+        return Promise.resolve(response([item({ title: "Mug" })]));
+      if (path === `/api/private-lists/${LIST_ID}/archive`) return Promise.resolve({ id: "L2" });
+      return Promise.resolve({});
+    });
+    render(PrivateList, { props: { listId: LIST_ID } });
+    await flush();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Archive Carol" }));
+    await flush();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Archive list" }));
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith(`/api/private-lists/${LIST_ID}/archive`, {
+      method: "POST",
+    });
+    expect(window.location.hash).toBe("#/private-list/L2");
+  });
+
+  it("keeps the list when archiving is cancelled", async () => {
+    mockList([item({ title: "Mug" })]);
+    render(PrivateList, { props: { listId: LIST_ID } });
+    await flush();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Archive Carol" }));
+    await flush();
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await flush();
+
+    expect(mocks.api).not.toHaveBeenCalledWith(`/api/private-lists/${LIST_ID}/archive`, {
+      method: "POST",
+    });
   });
 });
