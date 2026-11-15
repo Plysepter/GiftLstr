@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -228,6 +229,142 @@ func TestHandleMetadataNormalizesCachedImageURL(t *testing.T) {
 	}
 	if want := "https://img.example.com/a.jpg"; got.Image != want {
 		t.Errorf("image = %q, want %q", got.Image, want)
+	}
+}
+
+func TestAmazonHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"www.amazon.ca", true},
+		{"amazon.com", true},
+		{"amazon.co.uk", true},
+		{"smile.amazon.de", true},
+		{"notamazon.com", false},
+		{"amazon.com.evil.example", false},
+		{"example.com", false},
+	}
+	for _, tc := range tests {
+		if got := amazonHost(tc.host); got != tc.want {
+			t.Errorf("amazonHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestAmazonASIN(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://www.amazon.ca/Starfinder-RPG-Player-Core-Pocket/dp/1640787097/ref=sr_1_1", "1640787097"},
+		{"https://www.amazon.com/gp/product/B0ABC12345", "B0ABC12345"},
+		{"https://www.amazon.ca/gp/aw/d/B0ABC12345?th=1", "B0ABC12345"},
+		{"https://www.amazon.ca/dp/B0ABC12345", "B0ABC12345"},
+		{"https://example.com/dp/B0ABC12345", ""},
+		{"https://www.amazon.ca/s?k=starfinder", ""},
+	}
+	for _, tc := range tests {
+		u, err := url.Parse(tc.url)
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.url, err)
+		}
+		if got := amazonASIN(u); got != tc.want {
+			t.Errorf("amazonASIN(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestAmazonSlugTitle(t *testing.T) {
+	u, _ := url.Parse("https://www.amazon.ca/Starfinder-RPG-Player-Core-Pocket/dp/1640787097/ref=sr_1_1")
+	if got, want := amazonSlugTitle(u, "1640787097"), "Starfinder RPG Player Core Pocket"; got != want {
+		t.Errorf("amazonSlugTitle = %q, want %q", got, want)
+	}
+	u, _ = url.Parse("https://www.amazon.ca/dp/1640787097")
+	if got := amazonSlugTitle(u, "1640787097"); got != "" {
+		t.Errorf("slug from bare /dp/ = %q, want empty", got)
+	}
+	u, _ = url.Parse("https://www.amazon.com/gp/product/B0ABC12345")
+	if got := amazonSlugTitle(u, "B0ABC12345"); got != "" {
+		t.Errorf("slug from /gp/product/ = %q, want empty", got)
+	}
+}
+
+func TestFetchPageMetadataAugmentsAmazonCaptcha(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/isbn/") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"title":"Starfinder Player Core Pocket Edition (S2)"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head><title>Amazon.ca</title></head><body>Click the button below to continue shopping</body></html>`)
+	}))
+
+	raw := "https://www.amazon.ca/Starfinder-RPG-Player-Core-Pocket/dp/1640787097/ref=sr_1_1"
+	meta, err := fetchPageMetadata(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if want := "Starfinder Player Core Pocket Edition (S2)"; meta.Title != want {
+		t.Errorf("title = %q, want %q", meta.Title, want)
+	}
+	if want := amazonImageURL("1640787097"); meta.Image != want {
+		t.Errorf("image = %q, want %q", meta.Image, want)
+	}
+}
+
+func TestFetchPageMetadataAmazonFallsBackToSlug(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/isbn/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head><title>Amazon.ca</title></head></html>`)
+	}))
+
+	raw := "https://www.amazon.ca/Starfinder-RPG-Player-Core-Pocket/dp/1640787097"
+	meta, err := fetchPageMetadata(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if want := "Starfinder RPG Player Core Pocket"; meta.Title != want {
+		t.Errorf("title = %q, want %q", meta.Title, want)
+	}
+}
+
+func TestFetchPageMetadataKeepsAmazonOGWhenPresent(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head>
+			<meta property="og:title" content="Amazon Basics HDMI Cable">
+			<meta property="og:image" content="https://img.example.com/cable.jpg">
+		</head></html>`)
+	}))
+
+	raw := "https://www.amazon.ca/Amazon-Basics-HDMI-Cable/dp/B0ABC12345"
+	meta, err := fetchPageMetadata(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if want := "Amazon Basics HDMI Cable"; meta.Title != want {
+		t.Errorf("title = %q, want %q", meta.Title, want)
+	}
+	if want := "https://img.example.com/cable.jpg"; meta.Image != want {
+		t.Errorf("image = %q, want %q", meta.Image, want)
+	}
+}
+
+func TestCachedMetadataFixesAmazonPlaceholder(t *testing.T) {
+	raw := "https://www.amazon.ca/Some-Gift-Item/dp/B0ABC12345"
+	u, _ := url.Parse(raw)
+	meta := cachedMetadata(context.Background(), raw, u, "Amazon.ca", "", "")
+	if want := "Some Gift Item"; meta.Title != want {
+		t.Errorf("title = %q, want %q", meta.Title, want)
+	}
+	if want := amazonImageURL("B0ABC12345"); meta.Image != want {
+		t.Errorf("image = %q, want %q", meta.Image, want)
 	}
 }
 

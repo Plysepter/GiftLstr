@@ -1085,6 +1085,138 @@ func normalizeImageURL(image, pageURL string) string {
 	return u.String()
 }
 
+// amazonHost reports whether host belongs to an Amazon storefront (any
+// regional domain, e.g. amazon.ca, amazon.co.uk). Short-link hosts such as
+// amzn.to are not matched directly; they redirect to a storefront, and callers
+// should pass the post-redirect URL.
+func amazonHost(host string) bool {
+	labels := strings.Split(strings.ToLower(strings.TrimSuffix(host, ".")), ".")
+	for i, label := range labels {
+		if label != "amazon" {
+			continue
+		}
+		// Accept amazon.com and regional domains like amazon.co.uk, but not
+		// lookalikes such as amazon.com.evil.example.
+		if n := len(labels) - i - 1; n == 1 || n == 2 {
+			return true
+		}
+	}
+	return false
+}
+
+// amazonASINRe matches the ASIN segment in the common Amazon product URL
+// shapes: /dp/ASIN, /gp/product/ASIN, /gp/aw/d/ASIN, /d/ASIN, /product/ASIN.
+var amazonASINRe = regexp.MustCompile(`(?i)/(?:dp|gp/product|gp/aw/d|d|product)/([a-z0-9]{10})(?:[/?]|$)`)
+
+func amazonASIN(u *url.URL) string {
+	if !amazonHost(u.Hostname()) {
+		return ""
+	}
+	m := amazonASINRe.FindStringSubmatch(u.Path)
+	if m == nil {
+		return ""
+	}
+	return strings.ToUpper(m[1])
+}
+
+// amazonImageURL returns the public product image derived from an ASIN. This
+// CDN endpoint is not behind Amazon's bot interstitial, so it still resolves
+// when the product page itself is blocked by a captcha.
+func amazonImageURL(asin string) string {
+	return "https://m.media-amazon.com/images/P/" + asin + ".01._SCLZZZZZZZ_.jpg"
+}
+
+// amazonPlaceholderTitle reports whether a parsed title is just the storefront
+// name served by Amazon's "Continue shopping" interstitial rather than the
+// product's real title.
+func amazonPlaceholderTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	return t == "" || t == "amazon" || strings.HasPrefix(t, "amazon.")
+}
+
+// amazonSlugTitle derives a readable fallback title from the product slug
+// Amazon puts before /dp/. For /Starfinder-RPG-Player-Core-Pocket/dp/... it
+// yields "Starfinder RPG Player Core Pocket". Other URL shapes carry no slug,
+// so they return an empty string.
+func amazonSlugTitle(u *url.URL, asin string) string {
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i, p := range parts {
+		if p != "dp" || i == 0 {
+			continue
+		}
+		slug := parts[i-1]
+		if slug == "" || strings.EqualFold(slug, asin) {
+			return ""
+		}
+		switch strings.ToLower(slug) {
+		case "gp", "aw", "d", "dp", "product", "s", "ref", "stores":
+			return ""
+		}
+		return strings.TrimSpace(strings.NewReplacer("-", " ", "_", " ").Replace(slug))
+	}
+	return ""
+}
+
+// isbn10Re matches an ISBN-10, which is also the ASIN Amazon uses for books.
+var isbn10Re = regexp.MustCompile(`^\d{9}[\dX]$`)
+
+// lookupOpenLibraryTitle asks Open Library for the catalogue title of a book
+// ASIN. Amazon's bot interstitial hides the real title, but this public
+// catalogue keeps working without credentials or scraping. A miss simply
+// returns an empty string so callers can fall back to the URL slug.
+func lookupOpenLibraryTitle(ctx context.Context, asin string) string {
+	if !isbn10Re.MatchString(asin) {
+		return ""
+	}
+	// This is only a fallback for a missing title, so keep it on a short
+	// leash: the URL slug is already a usable answer if the catalogue is slow.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openlibrary.org/isbn/"+asin+".json", nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "GiftLstr/1.0 (link previews)")
+	req.Header.Set("Accept", "application/json")
+	resp, err := fetchClient.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var book struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&book); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(book.Title)
+}
+
+// augmentAmazonMetadata fills the gaps left by Amazon's bot interstitial. The
+// product image is derivable from the ASIN, and for books Open Library can
+// supply a real title; otherwise the URL slug is used so the user never ends
+// up with "Amazon.ca" as the item name.
+func augmentAmazonMetadata(ctx context.Context, meta *pageMetadata, finalURL *url.URL) {
+	asin := amazonASIN(finalURL)
+	if asin == "" {
+		return
+	}
+	if meta.Image == "" {
+		meta.Image = amazonImageURL(asin)
+	}
+	if !amazonPlaceholderTitle(meta.Title) {
+		return
+	}
+	if title := lookupOpenLibraryTitle(ctx, asin); title != "" {
+		meta.Title = title
+		return
+	}
+	meta.Title = amazonSlugTitle(finalURL, asin)
+}
+
 func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
@@ -1137,7 +1269,23 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 	if ms := titleRe.FindStringSubmatch(doc); ms != nil && meta.Title == "" {
 		meta.Title = strings.TrimSpace(html.UnescapeString(ms[1]))
 	}
+	if finalURL := resp.Request.URL; finalURL != nil && amazonHost(finalURL.Hostname()) {
+		augmentAmazonMetadata(ctx, &meta, finalURL)
+	} else if rawURL, err := url.Parse(raw); err == nil && amazonHost(rawURL.Hostname()) {
+		augmentAmazonMetadata(ctx, &meta, rawURL)
+	}
 	return meta, nil
+}
+
+// cachedMetadata builds a response from a cached row, applying the Amazon
+// fallback so entries cached before it existed (when Amazon's interstitial
+// stored "Amazon.ca" with no image) still render correctly.
+func cachedMetadata(ctx context.Context, raw string, u *url.URL, title, desc, image string) pageMetadata {
+	meta := pageMetadata{URL: raw, Title: title, Description: desc, Image: normalizeImageURL(image, raw)}
+	if u != nil {
+		augmentAmazonMetadata(ctx, &meta, u)
+	}
+	return meta
 }
 
 // handleMetadata fetches Open Graph metadata for a public http(s) URL so the
@@ -1163,7 +1311,7 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 	cachedExists := cachedErr == nil
 	if cachedExists {
 		if t, err := time.Parse("2006-01-02 15:04:05", cachedAt); err == nil && time.Since(t) < metadataTTL {
-			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: normalizeImageURL(cachedImage, raw)})
+			writeJSON(w, 200, cachedMetadata(r.Context(), raw, u, cachedTitle, cachedDesc, cachedImage))
 			return
 		}
 	}
@@ -1173,7 +1321,7 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 		if cachedExists {
 			// Serve stale cache rather than failing — the image URL may still
 			// render even if the host now blocks us.
-			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: normalizeImageURL(cachedImage, raw)})
+			writeJSON(w, 200, cachedMetadata(r.Context(), raw, u, cachedTitle, cachedDesc, cachedImage))
 			return
 		}
 		// Distinguish non-HTML vs generic fetch errors for the client.
