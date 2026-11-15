@@ -20,6 +20,11 @@ services:
     # as-is: `docker compose up -d` without --build runs this image, while
     # --build re-tags a fresh build to the same name.
     image: giftlstr-giftlstr:latest
+    # This tag only exists on the local Docker host (it is loaded from a release
+    # tar), so never try to pull it from a registry. Without this, Arcane and
+    # `docker compose pull` attempt a Docker Hub pull and fail with "pull access
+    # denied for giftlstr-giftlstr". `up --build` still rebuilds when needed.
+    pull_policy: never
     build:
       context: ../..
     entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]

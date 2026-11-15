@@ -213,6 +213,26 @@ docker compose -f docker/giftlstr/docker-compose.demo.yml up -d
 Use `--build` to rebuild from source instead, or override the image names with
 `MAIN_IMAGE` / `DEMO_IMAGE` when calling the script.
 
+### Deploying a release with Arcane
+
+The release tags are local-only: `giftlstr-giftlstr:latest` exists on the host
+only after `docker load` (or an upload on Arcane's **Images** page). They are
+not published to a registry, so anything that pulls by name fails with
+`pull access denied for giftlstr-giftlstr`.
+
+- Load the archive in Arcane under **Images → Upload Image**, then use
+  **Deploy → Up** rather than **Redeploy**. If the environment's default deploy
+  pull policy is "always pull", set the project's deploy **Pull policy** to
+  **Never pull**.
+- The compose files set `pull_policy: never` on the app services for this
+  reason, so Compose does not try to pull the local tags; `up --build` still
+  rebuilds from source.
+- Arcane's **Redeploy** is defined as "pull the latest images and restart". It
+  may still attempt a registry pull for these local tags (and log a warning)
+  before falling back to the loaded image. To use it without any pull attempt,
+  publish the images to a registry, change the `image:` references to that
+  registry, and remove the `pull_policy: never` override.
+
 The demo image is built with `VITE_E2E=true`, which bundles the seeded demo
 accounts and e2e token provider — keep it out of production.
 

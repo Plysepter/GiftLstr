@@ -15,8 +15,10 @@
 services:
   giftlstr:
     # Built by scripts/release-docker.sh as giftlstr-giftlstr-demo:<version>
-    # (also tagged :latest), so a loaded release runs without --build.
+    # (also tagged :latest), so a loaded release runs without --build. As with
+    # the main compose, the tag is local-only; never pull it from a registry.
     image: giftlstr-giftlstr-demo:latest
+    pull_policy: never
     build:
       context: ../..
       # Keep the demo/e2e login picker in the bundle (see Dockerfile).
