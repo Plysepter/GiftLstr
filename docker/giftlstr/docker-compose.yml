@@ -16,6 +16,10 @@
 
 services:
   giftlstr:
+    # Explicit so a loaded release archive (scripts/release-docker.sh) is used
+    # as-is: `docker compose up -d` without --build runs this image, while
+    # --build re-tags a fresh build to the same name.
+    image: giftlstr-giftlstr:latest
     build:
       context: ../..
     entrypoint: ["/bin/sh", "-c", "umask 0002 && exec /usr/local/bin/giftlstr"]

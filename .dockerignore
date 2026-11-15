@@ -12,6 +12,10 @@ data
 .env.*
 !.env.example
 giftlstr-rebuilt
+# Release archives must never enter the build context (scripts/release-docker.sh
+# writes them before the demo/multi-image builds run).
+releases
+*.tar
 *.db
 *.db-shm
 *.db-wal

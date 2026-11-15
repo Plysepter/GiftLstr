@@ -9,6 +9,9 @@ cd "$(dirname "$0")/.."
 VITE_E2E=true pnpm --dir web build
 rm -rf server/static
 mkdir -p server/static
+# Keep the tracked placeholder: builds wipe static/, and without it a fresh
+# clone cannot satisfy //go:embed static.
+: > server/static/.gitkeep
 cp -r web/dist/* server/static/
 
 go -C server build -o /tmp/giftlstr-e2e .

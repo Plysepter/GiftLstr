@@ -95,6 +95,20 @@ GiftLstr is a wishlist app for people who never know what to ask for (or buy). K
    > the first login — changing it later changes every `sub`, so all existing
    > accounts would be treated as new users.
 
+## Deployment notes
+
+### Behind Cloudflare
+
+The app sends a strict `Content-Security-Policy`. Cloudflare Web Analytics
+(`https://static.cloudflareinsights.com` for the beacon script and
+`https://cloudflareinsights.com` for its reporting endpoint) is allowed.
+
+Cloudflare's **JavaScript Detections** feature (part of Bot Fight Mode / Super
+Bot Fight Mode) injects an inline script whose body changes on every request
+(it embeds the current `cf-ray` and timestamp), so it cannot be allowed by
+hash. Disable JavaScript Detections for the GiftLstr hostname; no app-side CSP
+change can permit that script without weakening `script-src`.
+
 ## Development
 
 The frontend proxies `/api` to `http://localhost:8080`, so run both sides. The
@@ -155,6 +169,52 @@ main demo user, connected to `bob`, `carol`, `dana`, `eric`, `faye` and
 `george`), plus `helen:Helen Honeydew` and `ivan:Ivan Kiwi`, who are *not*
 connected to alice — handy for seeing the "no access" behavior. Bulk
 `mock01..mock30` accounts exist to exercise list pagination.
+
+## Releasing Docker images
+
+`scripts/release-docker.sh` builds the main and demo images and exports each as
+a tar archive, tagged with a version:
+
+```sh
+# Version defaults to `git describe --tags --always --dirty`
+pnpm docker:release
+
+# Explicit version, custom output directory, or just one image
+sh scripts/release-docker.sh 1.4.0
+sh scripts/release-docker.sh 1.4.0 --out /tmp/releases
+sh scripts/release-docker.sh 1.4.0 --only demo
+sh scripts/release-docker.sh 1.4.0 --no-latest   # don't also tag :latest
+```
+
+The script writes:
+
+| Image                           | Archive                            |
+| ------------------------------- | ---------------------------------- |
+| `giftlstr-giftlstr:<ver>`       | `releases/giftlstr-<ver>.tar`      |
+| `giftlstr-giftlstr-demo:<ver>`  | `releases/giftlstr-demo-<ver>.tar` |
+
+Both images also get a `:latest` tag unless `--no-latest` is passed, and the
+archives include both tags. Move a release to another host and load it with:
+
+```sh
+docker load -i releases/giftlstr-1.4.0.tar
+docker load -i releases/giftlstr-demo-1.4.0.tar
+```
+
+The compose files use these image names (`giftlstr-giftlstr:latest` for the
+main app, `giftlstr-giftlstr-demo:latest` for the demo), so after loading a
+release you can start it without rebuilding:
+
+```sh
+docker compose -f docker/giftlstr/docker-compose.yml up -d
+docker compose -f docker/giftlstr/docker-compose.demo.yml up -d
+```
+
+Use `--build` to rebuild from source instead, or override the image names with
+`MAIN_IMAGE` / `DEMO_IMAGE` when calling the script.
+
+The demo image is built with `VITE_E2E=true`, which bundles the seeded demo
+accounts and e2e token provider — keep it out of production.
 
 ## Configuration
 

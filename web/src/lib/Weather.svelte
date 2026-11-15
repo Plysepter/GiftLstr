@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { season } from './theme.svelte.js';
+	import { season, prefs } from './theme.svelte.js';
 
 	let flakes: Array<{ left: string; s: string; t: string; d: string; sway: string }> = $derived.by(
 		() => {
-			if (season.kind !== 'christmas') return [];
+			if (prefs.reduceVfx || season.kind !== 'christmas') return [];
 			return Array.from({ length: 46 }, () => ({
 				left: Math.random() * 100 + '%',
 				s: 3 + Math.random() * 4 + 'px',
@@ -16,7 +16,7 @@
 
 	let pieces: Array<{ left: string; c: string; t: string; d: string; r: string }> = $derived.by(
 		() => {
-			if (season.kind !== 'birthday') return [];
+			if (prefs.reduceVfx || season.kind !== 'birthday') return [];
 			const cols: string[] = ['#8B5CF6', '#EC4899', '#F59E0B', '#22D3EE', '#34D399'];
 			return Array.from({ length: 34 }, (_, i) => ({
 				left: Math.random() * 100 + '%',

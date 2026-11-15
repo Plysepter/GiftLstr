@@ -2047,3 +2047,41 @@ dialog.edit-dlg::backdrop {
     animation-delay: 0s !important;
   }
 }
+
+/* ============ reduce VFX (Profile → Appearance) ============ */
+/* Opt-out of frosted-glass translucency and decorative motion. Background
+   colours stay themed, but surfaces become opaque so nothing shows through and
+   transitions/animations settle immediately. The loading spinner is exempt so
+   progress stays visible while data loads. */
+:root[data-reduce-vfx] {
+  --surface: var(--solid) !important;
+  --composer-bg: var(--bg) !important;
+}
+:root[data-reduce-vfx] *,
+:root[data-reduce-vfx] *::before,
+:root[data-reduce-vfx] *::after,
+:root[data-reduce-vfx] *::backdrop {
+  animation-duration: 0.001s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001s !important;
+  scroll-behavior: auto !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-reduce-vfx] .loader::before,
+:root[data-reduce-vfx] .loader::after {
+  animation-duration: 2.86s !important;
+  animation-iteration-count: infinite !important;
+}
+:root[data-reduce-vfx] .page-scrim,
+:root[data-reduce-vfx] form.composer,
+:root[data-reduce-vfx] nav.tabbar {
+  background: var(--bg);
+}
+:root[data-reduce-vfx] dialog.edit-dlg .dlg-card {
+  background: var(--solid);
+}
+:root[data-reduce-vfx] dialog.edit-dlg::backdrop {
+  background: color-mix(in srgb, var(--bg) 88%, black);
+}

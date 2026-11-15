@@ -14,9 +14,14 @@ giftlstr-rebuilt
 giftlstr.tar
 giftlstr-*.tar
 
+# Docker release archives (scripts/release-docker.sh)
+releases/
+
 # Built frontend assets embedded by the Go server (regenerated at build time
-# from web/dist/ by scripts/e2e-server.sh and the Dockerfile).
-server/static/
+# from web/dist/ by scripts/e2e-server.sh and the Dockerfile). Ignore the
+# directory contents rather than the directory itself so the tracked
+# placeholder below can be re-included.
+server/static/*
 !server/static/.gitkeep
 
 # SQLite database files

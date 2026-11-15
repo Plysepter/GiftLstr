@@ -1057,6 +1057,34 @@ var titleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
 const metadataTTL = 30 * 24 * time.Hour
 
+// normalizeImageURL turns an Open Graph image reference into an absolute URL.
+// References may be relative to the page, and many sites still advertise
+// http:// images even though the SPA is served over HTTPS. Upgrading them to
+// https avoids a mixed-content block (hosts that publish http:// previews
+// almost always serve the same asset over TLS).
+func normalizeImageURL(image, pageURL string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return ""
+	}
+	ref, err := url.Parse(image)
+	if err != nil {
+		return ""
+	}
+	u := base.ResolveReference(ref)
+	if u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return u.String()
+}
+
 func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
@@ -1101,8 +1129,8 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 				meta.Description = val
 			}
 		case "og:image", "twitter:image":
-			if meta.Image == "" && validItemURL(val) {
-				meta.Image = val
+			if meta.Image == "" {
+				meta.Image = normalizeImageURL(val, raw)
 			}
 		}
 	}
@@ -1135,7 +1163,7 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 	cachedExists := cachedErr == nil
 	if cachedExists {
 		if t, err := time.Parse("2006-01-02 15:04:05", cachedAt); err == nil && time.Since(t) < metadataTTL {
-			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: cachedImage})
+			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: normalizeImageURL(cachedImage, raw)})
 			return
 		}
 	}
@@ -1145,7 +1173,7 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 		if cachedExists {
 			// Serve stale cache rather than failing — the image URL may still
 			// render even if the host now blocks us.
-			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: cachedImage})
+			writeJSON(w, 200, pageMetadata{URL: raw, Title: cachedTitle, Description: cachedDesc, Image: normalizeImageURL(cachedImage, raw)})
 			return
 		}
 		// Distinguish non-HTML vs generic fetch errors for the client.
@@ -1771,6 +1799,7 @@ func handleArchiveIndex(w http.ResponseWriter, r *http.Request) {
 	page, offset := pageParams(r, per)
 	var total int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM lists WHERE user_id = ? AND is_private = ? AND archived_at IS NOT NULL`, u.ID, isPrivate).Scan(&total); err != nil {
+		log.Printf("archive index count: %v", err)
 		fail(w, 500, "query error")
 		return
 	}
@@ -1788,6 +1817,7 @@ func handleArchiveIndex(w http.ResponseWriter, r *http.Request) {
 		ORDER BY l.archived_at DESC, l.rowid DESC LIMIT ? OFFSET ?`,
 		u.ID, isPrivate, per, offset)
 	if err != nil {
+		log.Printf("archive index list query: %v", err)
 		fail(w, 500, "query error")
 		return
 	}
@@ -1795,11 +1825,17 @@ func handleArchiveIndex(w http.ResponseWriter, r *http.Request) {
 	lists := []archivedList{}
 	for rows.Next() {
 		var a archivedList
-		if rows.Scan(&a.ID, &a.Label, &a.ArchivedAt, &a.ItemCount, &a.ClaimedCount,
-			&a.FirstName, &a.LastName, &a.Birthday, &a.Theme) != nil {
+		if err := rows.Scan(&a.ID, &a.Label, &a.ArchivedAt, &a.ItemCount, &a.ClaimedCount,
+			&a.FirstName, &a.LastName, &a.Birthday, &a.Theme); err != nil {
+			log.Printf("archive index scan: %v", err)
 			continue
 		}
 		lists = append(lists, a)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("archive index rows: %v", err)
+		fail(w, 500, "query error")
+		return
 	}
 	writeJSON(w, 200, archiveIndexResponse{Lists: lists, Page: page, HasMore: page*per < total, Total: total})
 }

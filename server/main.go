@@ -39,6 +39,35 @@ var staticFS embed.FS
 //go:embed openapi.yaml
 var openapiSpec []byte
 
+// schemaMigrations adds columns introduced after the initial schema so
+// databases created by older releases keep working. Keep this in sync with
+// schema.sql: every column added to an existing table needs an entry here.
+var schemaMigrations = []string{
+	`ALTER TABLE items ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`,
+	`ALTER TABLE items ADD COLUMN suggested_by TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN suggested_by_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE items ADD COLUMN created_by_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE users ADD COLUMN holiday_reset TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
+	`ALTER TABLE users ADD COLUMN spending_enabled INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE claims ADD COLUMN price_cents INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE lists ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE lists ADD COLUMN first_name TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE lists ADD COLUMN last_name TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE lists ADD COLUMN birthday TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE lists ADD COLUMN theme TEXT NOT NULL DEFAULT 'aurora'`,
+}
+
+// applyMigrations brings an existing database up to schema.sql. Errors are
+// expected for columns that already exist (CREATE TABLE IF NOT EXISTS does not
+// add them) and are ignored; a genuinely missing column still surfaces on the
+// first query that needs it.
+func applyMigrations(d *sql.DB) {
+	for _, m := range schemaMigrations {
+		d.Exec(m)
+	}
+}
+
 var db *sql.DB
 
 // indexHTML is the SPA shell with the runtime Authentik OIDC config baked in,
@@ -83,23 +112,7 @@ func main() {
 	if _, err := db.Exec(string(schema)); err != nil {
 		log.Fatalf("apply schema: %v", err)
 	}
-	// Migrations: add columns that may not exist in older databases.
-	for _, m := range []string{
-		`ALTER TABLE items ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'`,
-		`ALTER TABLE items ADD COLUMN suggested_by TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE items ADD COLUMN suggested_by_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE items ADD COLUMN created_by_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE users ADD COLUMN holiday_reset TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE users ADD COLUMN allow_suggestions INTEGER NOT NULL DEFAULT 1`,
-		`ALTER TABLE users ADD COLUMN spending_enabled INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE claims ADD COLUMN price_cents INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE lists ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE lists ADD COLUMN first_name TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE lists ADD COLUMN last_name TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE lists ADD COLUMN birthday TEXT NOT NULL DEFAULT ''`,
-	} {
-		db.Exec(m) // ignore "duplicate column" errors
-	}
+	applyMigrations(db)
 	// E2E / demo mode starts from the canonical seeded dataset on every boot so
 	// the Playwright suite and the docker demo always see identical data.
 	if e2eTestMode() {
@@ -241,9 +254,9 @@ func scriptHash(block string) string {
 
 // contentSecurityPolicy returns the CSP header value for the SPA shell.
 // Everything loads from the same origin except the theme bootstrap and the
-// runtime OIDC config, which are inline scripts allowed by hash, and images,
-// which may come from any https source (item tiles embed third-party previews
-// and favicons).
+// runtime OIDC config, which are inline scripts allowed by hash; Cloudflare
+// Web Analytics (injected by the CDN when enabled); and images, which may come
+// from any https source (item tiles embed third-party previews and favicons).
 func contentSecurityPolicy(themeHash, configHash string) string {
 	scripts := "script-src 'self'"
 	for _, h := range []string{themeHash, configHash} {
@@ -251,9 +264,12 @@ func contentSecurityPolicy(themeHash, configHash string) string {
 			scripts += " 'sha256-" + h + "'"
 		}
 	}
+	// Cloudflare's beacon is an external module script from
+	// static.cloudflareinsights.com and reports back to cloudflareinsights.com.
+	scripts += " https://static.cloudflareinsights.com"
 	return "default-src 'self'; " + scripts +
 		"; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:;" +
-		" connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		" connect-src 'self' https://cloudflareinsights.com; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 }
 
 // setAuthConfig replaces any previously set window.__GIFTLSTR__ config script

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { user, loaded, signOut } from '../lib/auth.js';
 	import { api } from '../lib/api.js';
-	import { theme, prefs, setTheme, setStyle, setEvents, setUseOwnerTheme, setContrast } from '../lib/theme.svelte.js';
+	import { theme, prefs, setTheme, setStyle, setEvents, setUseOwnerTheme, setContrast, setReduceVfx } from '../lib/theme.svelte.js';
 	import type { ThemeChoice, ThemeStyle } from '../lib/theme.svelte.js';
 	import { BDAY_MONTHS, BDAY_DAYS, HOLIDAY_OPTIONS, parseBday, formatBday } from '../lib/birthday.js';
 	import PageHeader from '../lib/PageHeader.svelte';
@@ -271,6 +271,14 @@
 			<span>
 				<b>High contrast</b>
 				<span class="hint">Keeps text fully legible at larger system font scales and zoom levels</span>
+			</span>
+		</label>
+
+		<label class="event-row" for="reduceVfxToggle">
+			<input id="reduceVfxToggle" type="checkbox" checked={prefs.reduceVfx} onchange={(e) => setReduceVfx(e.currentTarget.checked)} />
+			<span>
+				<b>Reduce VFX</b>
+				<span class="hint">Removes frosted-glass transparency and decorative animations for a calmer, lighter page</span>
 			</span>
 		</label>
 	</div>

@@ -1,6 +1,7 @@
 export function confetti(x: number, y: number, colors?: string[]): void {
   if (typeof window === "undefined" || typeof document === "undefined") return;
   if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (document.documentElement.dataset.reduceVfx) return;
   const palette = colors ?? ["#818CF8", "#E879F9", "#22D3EE", "#FBBF24"];
   for (let i = 0; i < 20; i++) {
     const c = document.createElement("i");

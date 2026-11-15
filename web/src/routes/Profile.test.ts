@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => {
     setEvents: vi.fn(),
     setUseOwnerTheme: vi.fn(),
     setContrast: vi.fn(),
+    setReduceVfx: vi.fn(),
     signOut: vi.fn(),
     copyToClipboard: vi.fn(),
   };
@@ -50,7 +51,13 @@ vi.mock("../lib/auth.js", () => ({
 }));
 vi.mock("../lib/theme.svelte.js", () => ({
   theme: { choice: "system" },
-  prefs: { style: "kinetic", events: true, useOwnerTheme: false, contrast: false },
+  prefs: {
+    style: "kinetic",
+    events: true,
+    useOwnerTheme: false,
+    contrast: false,
+    reduceVfx: false,
+  },
   season: { kind: "none", days: 0, label: "" },
   seasonOverride: { value: "auto" },
   setTheme: mocks.setTheme,
@@ -58,6 +65,7 @@ vi.mock("../lib/theme.svelte.js", () => ({
   setEvents: mocks.setEvents,
   setUseOwnerTheme: mocks.setUseOwnerTheme,
   setContrast: mocks.setContrast,
+  setReduceVfx: mocks.setReduceVfx,
 }));
 vi.mock("../lib/listText.js", () => ({ copyToClipboard: mocks.copyToClipboard }));
 
@@ -226,6 +234,16 @@ describe("Appearance", () => {
     fireEvent.click(toggle);
     await flush();
     expect(mocks.setContrast).toHaveBeenCalledWith(true);
+  });
+
+  it("toggles reduced VFX through setReduceVfx", async () => {
+    const { container } = render(Profile);
+    await flush();
+    const toggle = container.querySelector("#reduceVfxToggle") as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    await flush();
+    expect(mocks.setReduceVfx).toHaveBeenCalledWith(true);
   });
 });
 

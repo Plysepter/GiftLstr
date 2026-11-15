@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,54 @@ func TestParseMMDD(t *testing.T) {
 	d := parseMMDD("12-25", 2026)
 	if d.Year() != 2026 || d.Month() != time.December || d.Day() != 25 {
 		t.Errorf("parseMMDD = %v", d)
+	}
+}
+
+// TestMigrationsAddPrivateListTheme guards databases upgraded from before
+// private lists: lists.theme existed in schema.sql but was missing from the
+// startup migrations, so creating the first private list failed with
+// "table lists has no column named theme".
+func TestMigrationsAddPrivateListTheme(t *testing.T) {
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "legacy.db")+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	defer d.Close()
+
+	schema, err := schemaFS.ReadFile("schema.sql")
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	// Recreate the schema as it existed before lists.theme was introduced.
+	legacy := strings.Replace(string(schema), ",\n\ttheme TEXT NOT NULL DEFAULT 'aurora'", "", 1)
+	if legacy == string(schema) {
+		t.Fatal("schema.sql no longer defines lists.theme; update this test")
+	}
+	if _, err := d.Exec(legacy); err != nil {
+		t.Fatalf("apply legacy schema: %v", err)
+	}
+
+	applyMigrations(d)
+
+	var hasTheme int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('lists') WHERE name = 'theme'`).Scan(&hasTheme); err != nil {
+		t.Fatalf("inspect lists columns: %v", err)
+	}
+	if hasTheme != 1 {
+		t.Fatal("migrations did not add lists.theme")
+	}
+
+	// The insert handleCreatePrivateList performs must work on the migrated db.
+	if _, err := d.Exec(`INSERT INTO users (id, auth_user_id, username, display_name) VALUES ('u1', 'legacy:u1', 'legacy_u1', 'Legacy User')`); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO lists (id, user_id, label, is_private, first_name, last_name, birthday, theme)
+		VALUES ('l1', 'u1', 'Jane Doe', 1, 'Jane', 'Doe', '05-15', 'aurora')`); err != nil {
+		t.Fatalf("insert private list after migration: %v", err)
+	}
+	var theme string
+	if err := d.QueryRow(`SELECT theme FROM lists WHERE id = 'l1'`).Scan(&theme); err != nil || theme != "aurora" {
+		t.Fatalf("private list theme = %q, %v; want aurora", theme, err)
 	}
 }
 
@@ -79,7 +129,7 @@ func TestContentSecurityPolicyHashesInlineScripts(t *testing.T) {
 	if !strings.Contains(csp, "default-src 'self'") {
 		t.Errorf("missing default-src: %s", csp)
 	}
-	for _, src := range []string{"'sha256-" + scriptHash(theme) + "'", "'sha256-" + scriptHash(config) + "'", "frame-ancestors 'none'", "object-src 'none'"} {
+	for _, src := range []string{"'sha256-" + scriptHash(theme) + "'", "'sha256-" + scriptHash(config) + "'", "frame-ancestors 'none'", "object-src 'none'", "script-src 'self' 'sha256-" + scriptHash(theme) + "' 'sha256-" + scriptHash(config) + "' https://static.cloudflareinsights.com", "connect-src 'self' https://cloudflareinsights.com"} {
 		if !strings.Contains(csp, src) {
 			t.Errorf("CSP missing %s: %s", src, csp)
 		}

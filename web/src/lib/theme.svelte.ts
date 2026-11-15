@@ -37,6 +37,7 @@ export const prefs = $state<{
   events: boolean;
   useOwnerTheme: boolean;
   contrast: boolean;
+  reduceVfx: boolean;
 }>(loadPrefs());
 
 /**
@@ -98,20 +99,29 @@ function loadPrefs(): {
   events: boolean;
   useOwnerTheme: boolean;
   contrast: boolean;
+  reduceVfx: boolean;
 } {
   try {
     let style = localStorage.getItem("theme-style");
     const events = localStorage.getItem("theme-events");
     const useOwnerTheme = localStorage.getItem("theme-useOwner");
     const contrast = localStorage.getItem("theme-contrast");
+    const reduceVfx = localStorage.getItem("theme-reduceVfx");
     return {
       style: ALL_STYLES.includes(style as ThemeStyle) ? (style as ThemeStyle) : "aurora",
       events: events !== "0",
       useOwnerTheme: useOwnerTheme !== "0",
       contrast: contrast === "1",
+      reduceVfx: reduceVfx === "1",
     };
   } catch {
-    return { style: "aurora", events: true, useOwnerTheme: true, contrast: false };
+    return {
+      style: "aurora",
+      events: true,
+      useOwnerTheme: true,
+      contrast: false,
+      reduceVfx: false,
+    };
   }
 }
 
@@ -127,6 +137,8 @@ export function apply(): void {
   document.documentElement.dataset.season = season.kind;
   if (prefs.contrast) document.documentElement.dataset.hc = "on";
   else delete document.documentElement.dataset.hc;
+  if (prefs.reduceVfx) document.documentElement.dataset.reduceVfx = "on";
+  else delete document.documentElement.dataset.reduceVfx;
 }
 
 /** Pure helper: returns the season that would be active for a given birthday + optional holiday reset. */
@@ -260,6 +272,16 @@ export function setContrast(v: boolean): void {
   prefs.contrast = v;
   try {
     localStorage.setItem("theme-contrast", v ? "1" : "0");
+  } catch {
+    // Non-fatal.
+  }
+  apply();
+}
+
+export function setReduceVfx(v: boolean): void {
+  prefs.reduceVfx = v;
+  try {
+    localStorage.setItem("theme-reduceVfx", v ? "1" : "0");
   } catch {
     // Non-fatal.
   }

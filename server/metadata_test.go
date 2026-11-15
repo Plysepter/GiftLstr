@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -178,5 +179,73 @@ func TestFetchPageMetadataOGTakesPrecedenceOverTitle(t *testing.T) {
 	}
 	if meta.Title != "OG Title" {
 		t.Errorf("title = %q, want OG Title (Open Graph should win)", meta.Title)
+	}
+}
+
+func TestNormalizeImageURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+		page  string
+		want  string
+	}{
+		{"already https", "https://img.example.com/w.png", "https://example.com/thing", "https://img.example.com/w.png"},
+		{"http upgraded", "http://sonofoak.com/cdn/shop/files/x.jpg?v=1", "https://example.com/thing", "https://sonofoak.com/cdn/shop/files/x.jpg?v=1"},
+		{"relative resolved", "/cdn/shop/files/x.jpg", "https://shop.example.com/products/x", "https://shop.example.com/cdn/shop/files/x.jpg"},
+		{"relative resolved from http page", "images/x.jpg", "http://example.com/a/b", "https://example.com/a/images/x.jpg"},
+		{"protocol relative", "//img.example.com/x.png", "https://example.com/", "https://img.example.com/x.png"},
+		{"empty", "", "https://example.com/", ""},
+		{"non-http scheme", "data:image/png;base64,AAAA", "https://example.com/", ""},
+		{"javascript scheme", "javascript:alert(1)", "https://example.com/", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeImageURL(tc.image, tc.page); got != tc.want {
+				t.Errorf("normalizeImageURL(%q, %q) = %q, want %q", tc.image, tc.page, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleMetadataNormalizesCachedImageURL(t *testing.T) {
+	raw := "https://8.8.8.8/cached-preview"
+	if _, err := db.Exec(`INSERT INTO metadata_cache (url, title, description, image, fetched_at) VALUES (?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(url) DO UPDATE SET title=excluded.title, description=excluded.description, image=excluded.image, fetched_at=excluded.fetched_at`,
+		raw, "Cached", "Cached desc", "http://img.example.com/a.jpg"); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/metadata?url="+url.QueryEscape(raw), nil)
+	rec := httptest.NewRecorder()
+	handleMetadata(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got pageMetadata
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if want := "https://img.example.com/a.jpg"; got.Image != want {
+		t.Errorf("image = %q, want %q", got.Image, want)
+	}
+}
+
+func TestFetchPageMetadataNormalizesImageURL(t *testing.T) {
+	body := `<html><head>
+		<meta property="og:image" content="http://sonofoak.com/cdn/shop/files/black_friday.jpg?v=1">
+	</head></html>`
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+
+	meta, err := fetchPageMetadata(context.Background(), "https://example.com/thing")
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	want := "https://sonofoak.com/cdn/shop/files/black_friday.jpg?v=1"
+	if meta.Image != want {
+		t.Errorf("image = %q, want %q", meta.Image, want)
 	}
 }
