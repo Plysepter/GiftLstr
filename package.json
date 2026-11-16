@@ -13,6 +13,6 @@
 		"docker:genenv": "sh scripts/init-authentik-env.sh"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.58.0"
+		"@playwright/test": "^1.65.1"
 	}
 }
