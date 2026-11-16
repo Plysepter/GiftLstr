@@ -658,7 +658,10 @@ paths:
       summary: Add an item to your own list
       description: >
         Adds to the caller's active list, or to one of the caller's private
-        lists when listId is given.
+        lists when listId is given. Amazon links are stored in canonical
+        product form: short links (a.co, amzn.to, ...) are expanded and
+        tracking parameters and title slugs are dropped, yielding
+        https://<storefront>/dp/<ASIN>. Other links are stored unchanged.
       requestBody:
         required: true
         content:
@@ -706,6 +709,9 @@ paths:
   /api/my/items/{id}:
     patch:
       summary: Edit an item on your own list
+      description: >
+        Amazon URLs are canonicalized the same way as on create: short links
+        are expanded and the URL is reduced to https://<storefront>/dp/<ASIN>.
       parameters:
         - $ref: '#/components/parameters/pathId'
       requestBody:

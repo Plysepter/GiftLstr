@@ -1104,6 +1104,99 @@ func amazonHost(host string) bool {
 	return false
 }
 
+// amazonShortHost reports whether host is one of Amazon's link shorteners.
+// These do not expose an ASIN; the redirect target does.
+func amazonShortHost(host string) bool {
+	switch strings.ToLower(strings.TrimSuffix(host, ".")) {
+	case "a.co", "amzn.to", "amzn.eu", "amzn.asia", "amzn.com", "amzn.in", "amzn.com.br":
+		return true
+	}
+	return false
+}
+
+const (
+	browserUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+	// Amazon serves its bot interstitial to plain browser traffic from servers
+	// but serves the real product page to crawlers, because that is how link
+	// previews are meant to be fetched. Identify honestly as our own bot.
+	amazonBotUA = "Mozilla/5.0 (compatible; GiftLstrBot/1.0; +https://github.com/Plysepter/GiftLstr)"
+)
+
+// metadataUserAgent picks the crawler identity used for a metadata lookup.
+// Amazon (and its short links) need the bot identity to return product data.
+func metadataUserAgent(u *url.URL) string {
+	if u != nil && (amazonHost(u.Hostname()) || amazonShortHost(u.Hostname())) {
+		return amazonBotUA
+	}
+	return browserUA
+}
+
+var htmlTagRe = regexp.MustCompile(`(?s)<[^>]*>`)
+
+// textContent strips tags and collapses HTML whitespace/entities.
+func textContent(s string) string {
+	return strings.Join(strings.Fields(html.UnescapeString(htmlTagRe.ReplaceAllString(s, " "))), " ")
+}
+
+var amazonProductTitleRe = regexp.MustCompile(`(?is)<span[^>]*id="productTitle"[^>]*>(.*?)</span>`)
+
+// amazonProductTitle reads the product name from Amazon's product page. This
+// is the clean title, unlike <title>, which appends the byline and category.
+func amazonProductTitle(doc string) string {
+	if m := amazonProductTitleRe.FindStringSubmatch(doc); m != nil {
+		return textContent(m[1])
+	}
+	return ""
+}
+
+// cleanAmazonTitle strips the storefront decorations Amazon wraps around a
+// page title, e.g. "Thing : Amazon.ca: Tools & Home Improvement".
+func cleanAmazonTitle(title string) string {
+	t := strings.TrimSpace(title)
+	lower := strings.ToLower(t)
+	if strings.HasPrefix(lower, "amazon.") || strings.HasPrefix(lower, "amazon:") {
+		if i := strings.Index(t, ":"); i >= 0 {
+			t = strings.TrimSpace(t[i+1:])
+			lower = strings.ToLower(t)
+		}
+	}
+	if i := strings.LastIndex(lower, ": amazon."); i >= 0 {
+		t = strings.TrimSpace(t[:i])
+	}
+	return t
+}
+
+var (
+	amazonHiResRe    = regexp.MustCompile(`"hiRes":"(https://[^"]+)"`)
+	amazonOldHiresRe = regexp.MustCompile(`data-old-hires="([^"]+)"`)
+)
+
+// amazonPageImage pulls the main product image out of the page. Amazon does
+// not emit og:image, but the gallery JSON and the landing image both carry a
+// high-resolution URL that is not derivable from the ASIN alone.
+func amazonPageImage(doc, pageURL string) string {
+	for _, re := range []*regexp.Regexp{amazonHiResRe, amazonOldHiresRe} {
+		if m := re.FindStringSubmatch(doc); m != nil {
+			if img := normalizeImageURL(html.UnescapeString(m[1]), pageURL); img != "" {
+				return img
+			}
+		}
+	}
+	return ""
+}
+
+var amazonFeatureRe = regexp.MustCompile(`(?is)id="feature-bullets".*?<li[^>]*>(.*?)</li>`)
+
+// amazonFeatureBullet returns the first "About this item" bullet, which is a
+// far more useful preview than Amazon's meta description (a repeat of the
+// title plus the category).
+func amazonFeatureBullet(doc string) string {
+	if m := amazonFeatureRe.FindStringSubmatch(doc); m != nil {
+		return textContent(m[1])
+	}
+	return ""
+}
+
 // amazonASINRe matches the ASIN segment in the common Amazon product URL
 // shapes: /dp/ASIN, /gp/product/ASIN, /gp/aw/d/ASIN, /d/ASIN, /product/ASIN.
 var amazonASINRe = regexp.MustCompile(`(?i)/(?:dp|gp/product|gp/aw/d|d|product)/([a-z0-9]{10})(?:[/?]|$)`)
@@ -1117,6 +1210,81 @@ func amazonASIN(u *url.URL) string {
 		return ""
 	}
 	return strings.ToUpper(m[1])
+}
+
+// maxShortLinkHops bounds how many redirects we follow when expanding an
+// Amazon short link, so a redirect loop can never hang the request.
+const maxShortLinkHops = 5
+
+// shortLinkClient follows no redirects itself: the caller reads each Location
+// header and decides whether to keep going. It shares the metadata transport so
+// the SSRF guard still applies to every hop.
+var shortLinkClient = &http.Client{
+	Timeout:   5 * time.Second,
+	Transport: fetchClient.Transport,
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
+
+// resolveAmazonShortLink follows the redirect chain of an Amazon short link
+// (a.co, amzn.to, ...) and returns the URL it lands on. It stops as soon as the
+// host is no longer a shortener, so the final storefront page is never
+// downloaded. Returns nil when the link cannot be resolved.
+func resolveAmazonShortLink(ctx context.Context, u *url.URL) *url.URL {
+	for i := 0; i < maxShortLinkHops && amazonShortHost(u.Hostname()); i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+		if err != nil {
+			return nil
+		}
+		req.Header.Set("User-Agent", amazonBotUA)
+		resp, err := shortLinkClient.Do(req)
+		if err != nil {
+			return nil
+		}
+		// Drain a little of the body so the connection can be reused, then
+		// release it; redirect responses carry no useful body.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<12))
+		resp.Body.Close()
+		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+			return u
+		}
+		loc := resp.Header.Get("Location")
+		if loc == "" {
+			return u
+		}
+		next, err := u.Parse(loc)
+		if err != nil {
+			return nil
+		}
+		u = next
+	}
+	return u
+}
+
+// canonicalAmazonURL reduces an Amazon link to its canonical product URL
+// (https://<storefront>/dp/<ASIN>), resolving short links first. Tracking
+// parameters, referral paths, and title slugs are dropped so every copy of a
+// product shares one stable URL. Non-Amazon links, and Amazon links without a
+// recognizable ASIN, are returned unchanged.
+func canonicalAmazonURL(ctx context.Context, raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	if amazonShortHost(u.Hostname()) {
+		if resolved := resolveAmazonShortLink(ctx, u); resolved != nil {
+			u = resolved
+		}
+	}
+	if !amazonHost(u.Hostname()) {
+		return raw
+	}
+	asin := amazonASIN(u)
+	if asin == "" {
+		return raw
+	}
+	return "https://" + u.Host + "/dp/" + asin
 }
 
 // amazonImageURL returns the public product image derived from an ASIN. This
@@ -1195,26 +1363,46 @@ func lookupOpenLibraryTitle(ctx context.Context, asin string) string {
 	return strings.TrimSpace(book.Title)
 }
 
-// augmentAmazonMetadata fills the gaps left by Amazon's bot interstitial. The
-// product image is derivable from the ASIN, and for books Open Library can
-// supply a real title; otherwise the URL slug is used so the user never ends
-// up with "Amazon.ca" as the item name.
-func augmentAmazonMetadata(ctx context.Context, meta *pageMetadata, finalURL *url.URL) {
-	asin := amazonASIN(finalURL)
+// augmentAmazonMetadata fills the gaps left by Amazon's bot interstitial. It
+// prefers the product name and gallery image embedded in a full product page,
+// then falls back to an ASIN-derived image, an Open Library catalogue title for
+// books, and finally the URL slug, so the user never ends up with "Amazon.ca"
+// as the item name.
+func augmentAmazonMetadata(ctx context.Context, meta *pageMetadata, pageURL *url.URL, doc string) {
+	asin := amazonASIN(pageURL)
 	if asin == "" {
 		return
 	}
-	if meta.Image == "" {
+
+	title := amazonProductTitle(doc)
+	if title == "" || amazonPlaceholderTitle(title) {
+		title = cleanAmazonTitle(meta.Title)
+	}
+	if amazonPlaceholderTitle(title) {
+		title = ""
+		if t := lookupOpenLibraryTitle(ctx, asin); t != "" {
+			title = t
+		} else {
+			title = amazonSlugTitle(pageURL, asin)
+		}
+	}
+	meta.Title = title
+
+	if img := amazonPageImage(doc, pageURL.String()); img != "" {
+		meta.Image = img
+	} else if meta.Image == "" && isbn10Re.MatchString(asin) {
+		// Media ASINs (books) resolve on the /images/P/ endpoint; general
+		// product ASINs only get a blank placeholder there, so leave those
+		// for the letter tile rather than rendering an empty image.
 		meta.Image = amazonImageURL(asin)
 	}
-	if !amazonPlaceholderTitle(meta.Title) {
-		return
+
+	if desc := amazonFeatureBullet(doc); desc != "" {
+		meta.Description = desc
+	} else if meta.Title != "" && strings.HasPrefix(meta.Description, meta.Title) {
+		// Amazon's meta description repeats the title and category.
+		meta.Description = ""
 	}
-	if title := lookupOpenLibraryTitle(ctx, asin); title != "" {
-		meta.Title = title
-		return
-	}
-	meta.Title = amazonSlugTitle(finalURL, asin)
 }
 
 func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
@@ -1222,9 +1410,11 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 	if err != nil {
 		return pageMetadata{}, err
 	}
-	// Look like a browser: many sites reject unknown crawlers outright, and
-	// social metadata is exactly what browsers get served.
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	rawURL, _ := url.Parse(raw)
+	// Look like a browser for ordinary sites: many reject unknown crawlers
+	// outright, and social metadata is exactly what browsers get served.
+	// Amazon is the exception — it only serves product data to crawlers.
+	req.Header.Set("User-Agent", metadataUserAgent(rawURL))
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-CA,en-US;q=0.9,en;q=0.8")
 	resp, err := fetchClient.Do(req)
@@ -1270,9 +1460,9 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 		meta.Title = strings.TrimSpace(html.UnescapeString(ms[1]))
 	}
 	if finalURL := resp.Request.URL; finalURL != nil && amazonHost(finalURL.Hostname()) {
-		augmentAmazonMetadata(ctx, &meta, finalURL)
-	} else if rawURL, err := url.Parse(raw); err == nil && amazonHost(rawURL.Hostname()) {
-		augmentAmazonMetadata(ctx, &meta, rawURL)
+		augmentAmazonMetadata(ctx, &meta, finalURL, doc)
+	} else if rawURL != nil && amazonHost(rawURL.Hostname()) {
+		augmentAmazonMetadata(ctx, &meta, rawURL, doc)
 	}
 	return meta, nil
 }
@@ -1283,7 +1473,7 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 func cachedMetadata(ctx context.Context, raw string, u *url.URL, title, desc, image string) pageMetadata {
 	meta := pageMetadata{URL: raw, Title: title, Description: desc, Image: normalizeImageURL(image, raw)}
 	if u != nil {
-		augmentAmazonMetadata(ctx, &meta, u)
+		augmentAmazonMetadata(ctx, &meta, u, "")
 	}
 	return meta
 }
@@ -1311,8 +1501,14 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 	cachedExists := cachedErr == nil
 	if cachedExists {
 		if t, err := time.Parse("2006-01-02 15:04:05", cachedAt); err == nil && time.Since(t) < metadataTTL {
-			writeJSON(w, 200, cachedMetadata(r.Context(), raw, u, cachedTitle, cachedDesc, cachedImage))
-			return
+			// A cached Amazon storefront name means the entry was captured from
+			// the bot interstitial; refetch once with the crawler identity
+			// rather than serving the broken title for another 30 days.
+			amazonShort := u != nil && (amazonHost(u.Hostname()) || amazonShortHost(u.Hostname()))
+			if !(amazonShort && cachedTitle != "" && amazonPlaceholderTitle(cachedTitle)) {
+				writeJSON(w, 200, cachedMetadata(r.Context(), raw, u, cachedTitle, cachedDesc, cachedImage))
+				return
+			}
 		}
 	}
 
@@ -1375,6 +1571,10 @@ func handleAddItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "url must be an absolute http(s) link")
 		return
 	}
+	// Store the canonical product URL when the link is an Amazon short link
+	// (a.co, amzn.to) or carries referral noise, so previews and dedupe all
+	// key off one stable address.
+	itemURL = canonicalAmazonURL(r.Context(), itemURL)
 	target := ""
 	if req.ListID != nil {
 		target = *req.ListID
@@ -1457,6 +1657,7 @@ func handleEditItem(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "url must be an absolute http(s) link")
 			return
 		}
+		itemURL = canonicalAmazonURL(r.Context(), itemURL)
 		sets = append(sets, "url = ?")
 		args = append(args, itemURL)
 	}
@@ -1636,6 +1837,7 @@ func handleAddPrivateIdea(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "url must be an absolute http(s) link")
 		return
 	}
+	itemURL = canonicalAmazonURL(r.Context(), itemURL)
 	listID, err := activeListID(ownerID)
 	if err != nil {
 		fail(w, 500, "list error")

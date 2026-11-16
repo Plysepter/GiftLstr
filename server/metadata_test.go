@@ -252,6 +252,94 @@ func TestAmazonHost(t *testing.T) {
 	}
 }
 
+func TestAmazonShortHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"a.co", true},
+		{"amzn.to", true},
+		{"amzn.eu", true},
+		{"amzn.in", true},
+		{"amzn.com.br", true},
+		{"www.a.co", false},
+		{"example.com", false},
+	}
+	for _, tc := range tests {
+		if got := amazonShortHost(tc.host); got != tc.want {
+			t.Errorf("amazonShortHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestMetadataUserAgent(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://www.amazon.ca/dp/B0ABC12345", amazonBotUA},
+		{"https://a.co/d/07O6xSy6", amazonBotUA},
+		{"https://example.com/thing", browserUA},
+	}
+	for _, tc := range tests {
+		u, _ := url.Parse(tc.url)
+		if got := metadataUserAgent(u); got != tc.want {
+			t.Errorf("metadataUserAgent(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+	}
+	if got := metadataUserAgent(nil); got != browserUA {
+		t.Errorf("metadataUserAgent(nil) = %q, want browser UA", got)
+	}
+}
+
+func TestCleanAmazonTitle(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"WARSUN T9PRO Flashlight : Amazon.ca: Tools & Home Improvement", "WARSUN T9PRO Flashlight"},
+		{"Amazon.com: Some Product", "Some Product"},
+		{"Starfinder RPG: Player Core : Amazon.ca: Toys & Games", "Starfinder RPG: Player Core"},
+		{"Already Clean Title", "Already Clean Title"},
+		{"Amazon.ca", "Amazon.ca"},
+	}
+	for _, tc := range tests {
+		if got := cleanAmazonTitle(tc.in); got != tc.want {
+			t.Errorf("cleanAmazonTitle(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestAugmentAmazonMetadataFromPage(t *testing.T) {
+	raw := "https://www.amazon.ca/Some-Product/dp/B0ABC12345"
+	u, _ := url.Parse(raw)
+	doc := `<html><head><title>Some Product : Amazon.ca: Tools</title></head><body>
+		<meta name="description" content="Some Product : Amazon.ca: Tools">
+		<span id="productTitle" class="a-size-medium">  Some Product  </span>
+		<div id="feature-bullets"><ul><li><span>First useful bullet.</span></li>
+		<li><span>Second bullet.</span></li></ul></div>
+		<script>var data = {"hiRes":"https://m.media-amazon.com/images/I/abc._AC_SL1500_.jpg"};</script>
+	</body></html>`
+	meta := pageMetadata{URL: raw, Title: "Some Product : Amazon.ca: Tools", Description: "Some Product : Amazon.ca: Tools"}
+	augmentAmazonMetadata(context.Background(), &meta, u, doc)
+	if want := "Some Product"; meta.Title != want {
+		t.Errorf("title = %q, want %q", meta.Title, want)
+	}
+	if want := "https://m.media-amazon.com/images/I/abc._AC_SL1500_.jpg"; meta.Image != want {
+		t.Errorf("image = %q, want %q", meta.Image, want)
+	}
+	if want := "First useful bullet."; meta.Description != want {
+		t.Errorf("description = %q, want %q", meta.Description, want)
+	}
+}
+
+func TestAugmentAmazonMetadataLeavesNonMediaImageEmpty(t *testing.T) {
+	raw := "https://www.amazon.ca/dp/B0ABC12345"
+	u, _ := url.Parse(raw)
+	meta := pageMetadata{URL: raw, Title: "Amazon.ca"}
+	augmentAmazonMetadata(context.Background(), &meta, u, "")
+	if meta.Image != "" {
+		t.Errorf("image = %q, want empty for non-media ASIN", meta.Image)
+	}
+}
+
 func TestAmazonASIN(t *testing.T) {
 	tests := []struct {
 		url  string
@@ -272,6 +360,80 @@ func TestAmazonASIN(t *testing.T) {
 		if got := amazonASIN(u); got != tc.want {
 			t.Errorf("amazonASIN(%q) = %q, want %q", tc.url, got, tc.want)
 		}
+	}
+}
+
+func TestCanonicalAmazonURL(t *testing.T) {
+	// Direct storefront links are rewritten without any network access.
+	tests := []struct{ in, want string }{
+		{"https://www.amazon.ca/Starfinder-RPG-Player-Core-Pocket/dp/1640787097/ref=sr_1_1", "https://www.amazon.ca/dp/1640787097"},
+		{"https://www.amazon.com/gp/product/B0ABC12345", "https://www.amazon.com/dp/B0ABC12345"},
+		{"https://www.amazon.ca/gp/aw/d/B0ABC12345?th=1", "https://www.amazon.ca/dp/B0ABC12345"},
+		{"https://www.amazon.ca/dp/B0ABC12345", "https://www.amazon.ca/dp/B0ABC12345"},
+		{"https://www.amazon.ca/s?k=starfinder", "https://www.amazon.ca/s?k=starfinder"},
+		{"https://example.com/thing", "https://example.com/thing"},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := canonicalAmazonURL(context.Background(), tc.in); got != tc.want {
+			t.Errorf("canonicalAmazonURL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// withShortLinkServer points shortLinkClient at a fake server that answers the
+// first short-link hop with a redirect to target, and returns a counter of how
+// many requests actually reached it.
+func withShortLinkServer(t *testing.T, target string) *int {
+	t.Helper()
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		http.Redirect(w, r, target, http.StatusMovedPermanently)
+	}))
+	t.Cleanup(srv.Close)
+	orig := shortLinkClient
+	shortLinkClient = &http.Client{
+		Transport: rewriteTransport{srv.URL},
+		Timeout:   5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	t.Cleanup(func() { shortLinkClient = orig })
+	return &hits
+}
+
+func TestCanonicalAmazonURLExpandsShortLink(t *testing.T) {
+	hits := withShortLinkServer(t, "https://www.amazon.ca/dp/B0GR4WMKXF?ref=cm_sw_r_cso")
+
+	got := canonicalAmazonURL(context.Background(), "https://a.co/d/07O6xSy6")
+	if want := "https://www.amazon.ca/dp/B0GR4WMKXF"; got != want {
+		t.Errorf("canonicalAmazonURL(short) = %q, want %q", got, want)
+	}
+	// The storefront page must never be fetched: one hop to read Location.
+	if *hits != 1 {
+		t.Errorf("short link fetched %d times, want 1", *hits)
+	}
+}
+
+func TestCanonicalAmazonURLKeepsRawWhenShortLinkUnresolved(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	orig := shortLinkClient
+	shortLinkClient = &http.Client{
+		Transport: rewriteTransport{srv.URL},
+		Timeout:   5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	t.Cleanup(func() { shortLinkClient = orig })
+
+	if got, want := canonicalAmazonURL(context.Background(), "https://a.co/d/07O6xSy6"), "https://a.co/d/07O6xSy6"; got != want {
+		t.Errorf("canonicalAmazonURL(unresolved) = %q, want %q", got, want)
 	}
 }
 
@@ -363,8 +525,10 @@ func TestCachedMetadataFixesAmazonPlaceholder(t *testing.T) {
 	if want := "Some Gift Item"; meta.Title != want {
 		t.Errorf("title = %q, want %q", meta.Title, want)
 	}
-	if want := amazonImageURL("B0ABC12345"); meta.Image != want {
-		t.Errorf("image = %q, want %q", meta.Image, want)
+	// A cached row has no page body, so a general product ASIN has no
+	// recoverable image; the handler refetches rather than inventing one.
+	if meta.Image != "" {
+		t.Errorf("image = %q, want empty", meta.Image)
 	}
 }
 
