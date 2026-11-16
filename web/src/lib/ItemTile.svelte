@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getMetadata } from './metadata.js';
+	import { getMetadata, metadataVersion } from './metadata.js';
 
 	let { title, url = '' }: { title: string; url?: string } = $props();
 
@@ -8,6 +8,8 @@
 
 	$effect(() => {
 		const target = url;
+		// Re-run when a preview is invalidated elsewhere (URL string unchanged).
+		void $metadataVersion;
 		ogImage = '';
 		ogFailed = false;
 		if (!target) return;

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1069,6 +1070,218 @@ func TestAdminUpdateUserRequiresAdmin(t *testing.T) {
 	// Invalid birthday rejected even for admins.
 	w, _ = doJSON(t, admin, http.MethodPatch, fmt.Sprintf("/api/admin/users/%s", target.ID), body{"birthday": "00-00"})
 	mustStatus(t, w, http.StatusBadRequest)
+}
+
+func TestAdminEditItemRequiresAdmin(t *testing.T) {
+	owner := seedUser(t, "c_aei_owner", "aei_owner", false)
+	pleb := seedUser(t, "c_aei_pleb", "aei_pleb", false)
+	id := addItemRow(t, activeList(t, owner.ID), "Old title")
+
+	w, _ := doJSON(t, pleb, http.MethodPatch, "/api/admin/items/"+id, body{"title": "Nope"})
+	mustStatus(t, w, http.StatusForbidden)
+
+	w, _ = doJSON(t, nil, http.MethodPatch, "/api/admin/items/"+id, body{"title": "Nope"})
+	mustStatus(t, w, http.StatusUnauthorized)
+}
+
+func TestAdminEditItemUpdatesText(t *testing.T) {
+	owner := seedUser(t, "c_aei2_owner", "aei2_owner", false)
+	admin := seedUser(t, "c_aei2_admin", "aei2_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "Old title")
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{
+		"title": "New title",
+		"url":   "https://example.com/thing",
+		"notes": "fresh notes",
+	})
+	mustStatus(t, w, http.StatusOK)
+
+	var title, itemURL, notes string
+	if err := db.QueryRow(`SELECT title, url, notes FROM items WHERE id = ?`, id).Scan(&title, &itemURL, &notes); err != nil {
+		t.Fatalf("read item: %v", err)
+	}
+	if title != "New title" || itemURL != "https://example.com/thing" || notes != "fresh notes" {
+		t.Errorf("item = (%q, %q, %q), want updated text", title, itemURL, notes)
+	}
+
+	// Empty title is rejected, like the owner's own edit.
+	w, _ = doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"title": "   "})
+	mustStatus(t, w, http.StatusBadRequest)
+}
+
+func TestAdminEditItemCanonicalizesAmazonURL(t *testing.T) {
+	owner := seedUser(t, "c_aei3_owner", "aei3_owner", false)
+	admin := seedUser(t, "c_aei3_admin", "aei3_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "Thing")
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{
+		"url": "https://www.amazon.ca/Some-Name/dp/B0GR4WMKXF/ref=sr_1_1?th=1",
+	})
+	mustStatus(t, w, http.StatusOK)
+
+	var itemURL string
+	db.QueryRow(`SELECT url FROM items WHERE id = ?`, id).Scan(&itemURL)
+	if want := "https://www.amazon.ca/dp/B0GR4WMKXF"; itemURL != want {
+		t.Errorf("url = %q, want %q", itemURL, want)
+	}
+}
+
+func TestAdminEditItemRegeneratesMetadata(t *testing.T) {
+	owner := seedUser(t, "c_aei4_owner", "aei4_owner", false)
+	admin := seedUser(t, "c_aei4_admin", "aei4_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "Stale title")
+	// A public literal IP passes the SSRF pre-check without a DNS lookup; the
+	// fake transport rewrites the request to the test server regardless.
+	const raw = "https://93.184.216.34/product"
+	if _, err := db.Exec(`UPDATE items SET url = ? WHERE id = ?`, raw, id); err != nil {
+		t.Fatalf("set url: %v", err)
+	}
+	// Pre-seed a stale cache row to prove the refresh bypasses the TTL.
+	if _, err := db.Exec(`INSERT INTO metadata_cache (url, title, description, image, fetched_at) VALUES (?, 'Stale', '', '', datetime('now'))
+		ON CONFLICT(url) DO UPDATE SET title=excluded.title, description=excluded.description, image=excluded.image, fetched_at=excluded.fetched_at`,
+		raw); err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head>
+			<meta property="og:title" content="Fresh Page Title">
+			<meta property="og:image" content="https://img.example.com/fresh.png">
+		</head></html>`)
+	}))
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"regenerate": true, "updateName": true})
+	mustStatus(t, w, http.StatusOK)
+
+	var resp adminEditItemResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.MetadataError != "" {
+		t.Errorf("metadataError = %q, want empty", resp.MetadataError)
+	}
+	if resp.Metadata == nil || resp.Metadata.Title != "Fresh Page Title" {
+		t.Errorf("metadata = %+v, want fresh title", resp.Metadata)
+	}
+
+	var title string
+	db.QueryRow(`SELECT title FROM items WHERE id = ?`, id).Scan(&title)
+	if title != "Fresh Page Title" {
+		t.Errorf("item title = %q, want Fresh Page Title", title)
+	}
+
+	var cached string
+	db.QueryRow(`SELECT title FROM metadata_cache WHERE url = ?`, raw).Scan(&cached)
+	if cached != "Fresh Page Title" {
+		t.Errorf("cached title = %q, want Fresh Page Title", cached)
+	}
+}
+
+func TestAdminEditItemRegenerateKeepsNameUnlessAsked(t *testing.T) {
+	owner := seedUser(t, "c_aei5_owner", "aei5_owner", false)
+	admin := seedUser(t, "c_aei5_admin", "aei5_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "My own name")
+	const raw = "https://93.184.216.34/product"
+	db.Exec(`UPDATE items SET url = ? WHERE id = ?`, raw, id)
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head><meta property="og:title" content="Page Title"></head></html>`)
+	}))
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"regenerate": true})
+	mustStatus(t, w, http.StatusOK)
+
+	var title string
+	db.QueryRow(`SELECT title FROM items WHERE id = ?`, id).Scan(&title)
+	if title != "My own name" {
+		t.Errorf("title = %q, want the admin's name to be preserved", title)
+	}
+}
+
+func TestAdminEditItemRefreshFailureKeepsEdits(t *testing.T) {
+	owner := seedUser(t, "c_aei6_owner", "aei6_owner", false)
+	admin := seedUser(t, "c_aei6_admin", "aei6_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "Old")
+	db.Exec(`UPDATE items SET url = 'https://93.184.216.34/broken' WHERE id = ?`, id)
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"title": "Renamed", "regenerate": true, "updateName": true})
+	mustStatus(t, w, http.StatusOK)
+
+	var resp adminEditItemResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.MetadataError == "" {
+		t.Error("expected a metadataError on fetch failure")
+	}
+	var title string
+	db.QueryRow(`SELECT title FROM items WHERE id = ?`, id).Scan(&title)
+	if title != "Renamed" {
+		t.Errorf("title = %q, want the text edit to survive a failed refresh", title)
+	}
+}
+
+func TestAdminEditItemRefreshWithoutLink(t *testing.T) {
+	owner := seedUser(t, "c_aei7_owner", "aei7_owner", false)
+	admin := seedUser(t, "c_aei7_admin", "aei7_admin", true)
+	id := addItemRow(t, activeList(t, owner.ID), "No link")
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"regenerate": true})
+	mustStatus(t, w, http.StatusOK)
+	var resp adminEditItemResponse
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp.MetadataError == "" {
+		t.Error("expected a metadataError when the item has no link")
+	}
+}
+
+func TestAdminEditItemRejectsArchivedAndPrivate(t *testing.T) {
+	owner := seedUser(t, "c_aei8_owner", "aei8_owner", false)
+	admin := seedUser(t, "c_aei8_admin", "aei8_admin", true)
+
+	// Someone else's private idea on the owner's live list (created while it is
+	// still active).
+	other := seedUser(t, "c_aei8_other", "aei8_other", false)
+	ideaID := addPrivateItemRow(t, owner.ID, other.ID, "Their idea")
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+ideaID, body{"title": "X"})
+	mustStatus(t, w, http.StatusForbidden)
+
+	// Archived list.
+	listID := activeList(t, owner.ID)
+	archivedID := addItemRow(t, listID, "Old")
+	db.Exec(`UPDATE lists SET archived_at = datetime('now') WHERE id = ?`, listID)
+	w, _ = doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+archivedID, body{"title": "X"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// Private list.
+	privList := newID()
+	if _, err := db.Exec(`INSERT INTO lists (id, user_id, label, is_private) VALUES (?, ?, 'Private', 1)`, privList, owner.ID); err != nil {
+		t.Fatalf("private list: %v", err)
+	}
+	privItem := addItemRow(t, privList, "Secret")
+	w, _ = doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+privItem, body{"title": "X"})
+	mustStatus(t, w, http.StatusBadRequest)
+
+	// Unknown item.
+	w, _ = doJSON(t, admin, http.MethodPatch, "/api/admin/items/00000000-0000-0000-0000-000000000000", body{"title": "X"})
+	mustStatus(t, w, http.StatusNotFound)
+}
+
+func TestAdminEditItemAllowsOwnPrivateIdea(t *testing.T) {
+	owner := seedUser(t, "c_aei9_owner", "aei9_owner", false)
+	admin := seedUser(t, "c_aei9_admin", "aei9_admin", true)
+	id := addPrivateItemRow(t, owner.ID, admin.ID, "My private note")
+
+	w, _ := doJSON(t, admin, http.MethodPatch, "/api/admin/items/"+id, body{"notes": "updated"})
+	mustStatus(t, w, http.StatusOK)
+	var notes string
+	db.QueryRow(`SELECT notes FROM items WHERE id = ?`, id).Scan(&notes)
+	if notes != "updated" {
+		t.Errorf("notes = %q, want updated", notes)
+	}
 }
 
 func TestAuthRequiredForProtectedEndpoints(t *testing.T) {

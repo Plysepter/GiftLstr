@@ -51,6 +51,19 @@ components:
         ok:
           type: boolean
       required: [ok]
+    PageMetadata:
+      type: object
+      description: A fetched link preview.
+      properties:
+        url:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        image:
+          type: string
+      required: [url, title, description, image]
     User:
       type: object
       properties:
@@ -1153,6 +1166,71 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           description: User not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/admin/items/{id}:
+    patch:
+      summary: Edit any item and optionally refresh its preview (admin only)
+      description: >
+        Lets an admin fix an item on any live, public list they can open — not
+        just their own — keyed only by item id. Amazon URLs are canonicalized
+        the same way as the owner's own edit. Archived lists, private lists, and
+        private ideas authored by someone else are refused. When regenerate is
+        set the link preview is refetched bypassing the cache TTL; updateName
+        additionally replaces the item's name with the fetched page title. A
+        failed refresh leaves the text edits in place and reports metadataError.
+      parameters:
+        - $ref: '#/components/parameters/pathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                url:
+                  type: string
+                notes:
+                  type: string
+                regenerate:
+                  type: boolean
+                  description: Force a fresh preview fetch, ignoring the cache TTL.
+                updateName:
+                  type: boolean
+                  description: Also set the name to the fetched page title.
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  metadata:
+                    $ref: '#/components/schemas/PageMetadata'
+                  metadataError:
+                    type: string
+                    description: Why a requested preview refresh failed.
+                required: [ok]
+        '400':
+          description: Bad request, archived list, or private list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Item not found.
           content:
             application/json:
               schema:

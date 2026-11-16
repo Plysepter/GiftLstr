@@ -27,6 +27,9 @@
 	import { buildListText, copyToClipboard } from '../lib/listText.js';
 	import Composer from '../lib/design/Composer.svelte';
 	import ConfirmDialog from '../lib/ConfirmDialog.svelte';
+	import AdminItemDialog from '../lib/AdminItemDialog.svelte';
+	import AdminItemMenu from '../lib/AdminItemMenu.svelte';
+	import { invalidateMetadata } from '../lib/metadata.js';
 
 	let { userId }: { userId: string } = $props();
 
@@ -39,6 +42,11 @@
 	let privateError = $state('');
 	let pending = $state<PendingItem[]>([]);
 	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
+
+	// admin right-click editing (live lists only)
+	let adminMenu = $state<{ x: number; y: number; item: Item } | null>(null);
+	let adminEdit = $state<Item | null>(null);
+	let notice = $state('');
 
 	const canHover = matchMedia('(hover: hover) and (pointer: fine)').matches;
 
@@ -347,6 +355,42 @@
 		if (canHover || t.closest('a, button')) return;
 		openId = openId === id ? null : id;
 	}
+
+	// ---------- admin right-click editing ----------
+	function openAdminMenu(e: MouseEvent, item: Item): void {
+		if (!$user?.isAdmin || network.offline) return;
+		e.preventDefault();
+		adminMenu = { x: e.clientX, y: e.clientY, item };
+	}
+
+	function startAdminEdit(): void {
+		if (!adminMenu) return;
+		adminEdit = adminMenu.item;
+		adminMenu = null;
+	}
+
+	function startAdminRegenerate(updateName: boolean): void {
+		const item = adminMenu?.item;
+		adminMenu = null;
+		if (item) void adminRegenerate(item, updateName);
+	}
+
+	async function adminRegenerate(item: Item, updateName: boolean): Promise<void> {
+		notice = '';
+		try {
+			const res = await api<{ metadataError?: string }>(`/api/admin/items/${item.id}`, {
+				method: 'PATCH',
+				body: { regenerate: true, updateName }
+			});
+			invalidateMetadata(item.url);
+			notice = res.metadataError
+				? `Saved, but the preview could not be refreshed: ${res.metadataError}`
+				: 'Preview regenerated.';
+			await load();
+		} catch (err) {
+			notice = err instanceof Error ? err.message : String(err);
+		}
+	}
 </script>
 <div class="userlist">
 	{#if loading && !data}
@@ -412,12 +456,15 @@
 	{#if priceError}
 		<p class="error price-error" role="alert">{priceError}</p>
 	{/if}
+	{#if notice}
+		<p class="admin-notice" role="status">{notice}</p>
+	{/if}
 
 <ul class="items">
 		{#each selfAuthored as item (item.id)}
 			<li class="itemcard" class:open={openId === item.id}>
 				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
-				<article class="card" onclick={(e) => onCardClick(e, item.id)}>
+				<article class="card" onclick={(e) => onCardClick(e, item.id)} oncontextmenu={(e) => openAdminMenu(e, item)}>
 					<div class="row1">
 						<ItemTile title={item.title} url={item.url} />
 						<div class="txt">
@@ -476,7 +523,7 @@
 			{#each suggestedItems as item (item.id)}
 				<li class="itemcard" class:open={openId === item.id}>
 					<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
-					<article class="card" onclick={(e) => onCardClick(e, item.id)}>
+					<article class="card" onclick={(e) => onCardClick(e, item.id)} oncontextmenu={(e) => openAdminMenu(e, item)}>
 						<div class="row1">
 							<ItemTile title={item.title} url={item.url} />
 							<div class="txt">
@@ -658,6 +705,26 @@
 			danger={confirmState.danger}
 			onconfirm={confirmState.action}
 			oncancel={() => (confirmState = null)}
+		/>
+	{/if}
+
+	{#if adminMenu}
+		<AdminItemMenu
+			x={adminMenu.x}
+			y={adminMenu.y}
+			onedit={startAdminEdit}
+			onregenerate={() => startAdminRegenerate(false)}
+			onregenerateName={() => startAdminRegenerate(true)}
+			onclose={() => (adminMenu = null)}
+		/>
+	{/if}
+
+	{#if adminEdit}
+		<AdminItemDialog
+			item={adminEdit}
+			onclose={() => (adminEdit = null)}
+			onsaved={() => void load()}
+			onerror={(m) => (notice = m)}
 		/>
 	{/if}
 	</div>
@@ -876,6 +943,16 @@
 	}
 	.price-error {
 		margin: 0.65rem 0;
+	}
+	.admin-notice {
+		margin: 0.65rem 0;
+		padding: 0.5rem 0.75rem;
+		border-radius: 12px;
+		background: color-mix(in srgb, var(--acc) 12%, var(--surface));
+		border: 1px solid color-mix(in srgb, var(--acc) 30%, var(--line));
+		color: var(--ink);
+		font-size: 0.85rem;
+		font-weight: 600;
 	}
 	.price-row {
 		display: flex;

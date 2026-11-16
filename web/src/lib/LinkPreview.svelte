@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getMetadata } from './metadata.js';
+	import { getMetadata, metadataVersion } from './metadata.js';
 	import type { PageMetadata } from './types.js';
 
 	let { url }: { url: string } = $props();
@@ -8,6 +8,8 @@
 
 	$effect(() => {
 		const target = url;
+		// Re-run when a preview is invalidated elsewhere (URL string unchanged).
+		void $metadataVersion;
 		meta = null;
 		if (!target) return;
 		getMetadata(target).then((m) => {

@@ -60,7 +60,10 @@ vi.mock("../lib/offlineQueue.js", () => ({
   startAutoSync: vi.fn(),
 }));
 vi.mock("../lib/network.svelte.js", () => ({ network: { offline: false } }));
-vi.mock("../lib/metadata.js", () => ({ getMetadata: () => Promise.resolve(null) }));
+vi.mock("../lib/metadata.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/metadata.js")>();
+  return { ...actual, getMetadata: () => Promise.resolve(null) };
+});
 vi.mock("../lib/listText.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/listText.js")>();
   return { ...actual, copyToClipboard: mocks.copyToClipboard };
@@ -171,5 +174,35 @@ describe("MyList copy to clipboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Copy list/ }));
     expect(mocks.copyToClipboard).toHaveBeenCalledWith("Dave Dragonfruit's birthday list:");
+  });
+});
+
+describe("MyList admin item editing", () => {
+  async function rightClickCard(container: HTMLElement): Promise<void> {
+    const card = container.querySelector("article.card") as HTMLElement;
+    await fireEvent.contextMenu(card);
+  }
+
+  it("opens the admin menu on right-click for an admin", async () => {
+    mocks.userStore.set({ ...ME, isAdmin: true });
+    mocks.api.mockImplementation(() =>
+      Promise.resolve(response([item({ id: "i1", title: "Mug", url: "https://example.com/mug" })])),
+    );
+    const { container } = render(MyList);
+    await flush();
+
+    await rightClickCard(container);
+    expect(screen.getByRole("menu", { name: "Item actions" })).toBeTruthy();
+  });
+
+  it("does not open the admin menu for a non-admin", async () => {
+    mocks.api.mockImplementation(() =>
+      Promise.resolve(response([item({ id: "i1", title: "Mug" })])),
+    );
+    const { container } = render(MyList);
+    await flush();
+
+    await rightClickCard(container);
+    expect(screen.queryByRole("menu", { name: "Item actions" })).toBeNull();
   });
 });

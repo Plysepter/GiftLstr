@@ -11,6 +11,7 @@ GiftLstr is a wishlist app for people who never know what to ask for (or buy). K
 - Optional automatic SQLite backups (daily with retention)
 - Optional per-IP API rate limiting
 - Admin panel for managing users
+- Admins can right-click any item on a list they can open to edit its text and regenerate its link preview
 - PWA with offline support (service-worker precaching + offline queue)
 - Light/dark theme
 

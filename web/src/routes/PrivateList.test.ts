@@ -64,7 +64,10 @@ vi.mock("../lib/offlineQueue.js", () => ({
   isOfflineError: mocks.isOfflineError,
   enqueueItem: mocks.enqueueItem,
 }));
-vi.mock("../lib/metadata.js", () => ({ getMetadata: () => Promise.resolve(null) }));
+vi.mock("../lib/metadata.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/metadata.js")>();
+  return { ...actual, getMetadata: () => Promise.resolve(null) };
+});
 vi.mock("../lib/listText.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/listText.js")>();
   return { ...actual, copyToClipboard: mocks.copyToClipboard };

@@ -13,6 +13,9 @@
 	import Icon from '../lib/Icon.svelte';
 	import Composer from '../lib/design/Composer.svelte';
 	import ConfirmDialog from '../lib/ConfirmDialog.svelte';
+	import AdminItemDialog from '../lib/AdminItemDialog.svelte';
+	import AdminItemMenu from '../lib/AdminItemMenu.svelte';
+	import { invalidateMetadata } from '../lib/metadata.js';
 	import { confetti } from '../lib/confetti.js';
 	import {
 		enqueueItem,
@@ -40,6 +43,12 @@
 	let copied = $state(false);
 	let dialogEl: HTMLDialogElement | undefined = $state();
 	let listEl: HTMLElement | undefined = $state();
+
+	// admin right-click editing (live lists only)
+	let adminMenu = $state<{ x: number; y: number; item: Item } | null>(null);
+	let adminEdit = $state<Item | null>(null);
+	let notice = $state('');
+	const isAdmin = $derived($user?.isAdmin === true);
 
 	// private / suggested confirmations
 	let confirmState = $state<{ title: string; message: string; confirmLabel: string; danger?: boolean; action: () => Promise<void> } | null>(null);
@@ -203,6 +212,42 @@
 		openId = openId === item.id ? null : item.id;
 	}
 
+	// ---------- admin right-click editing ----------
+	function openAdminMenu(e: MouseEvent, item: Item): void {
+		if (!isAdmin || network.offline) return;
+		e.preventDefault();
+		adminMenu = { x: e.clientX, y: e.clientY, item };
+	}
+
+	function startAdminEdit(): void {
+		if (!adminMenu) return;
+		adminEdit = adminMenu.item;
+		adminMenu = null;
+	}
+
+	function startAdminRegenerate(updateName: boolean): void {
+		const item = adminMenu?.item;
+		adminMenu = null;
+		if (item) void adminRegenerate(item, updateName);
+	}
+
+	async function adminRegenerate(item: Item, updateName: boolean): Promise<void> {
+		notice = '';
+		try {
+			const res = await api<{ metadataError?: string }>(`/api/admin/items/${item.id}`, {
+				method: 'PATCH',
+				body: { regenerate: true, updateName }
+			});
+			invalidateMetadata(item.url);
+			notice = res.metadataError
+				? `Saved, but the preview could not be refreshed: ${res.metadataError}`
+				: 'Preview regenerated.';
+			await load();
+		} catch (err) {
+			notice = err instanceof Error ? err.message : String(err);
+		}
+	}
+
 	// ---------- reordering ----------
 	interface DragCtx {
 		index: number;
@@ -340,6 +385,9 @@
 			<button class="ghost" type="button" onclick={() => void syncNow()}>Try sync now</button>
 		</div>
 	{/if}
+	{#if notice}
+		<p class="admin-notice" role="status">{notice}</p>
+	{/if}
 
 	<EmptyState
 		icon="gift"
@@ -352,7 +400,7 @@
 		{#each activeItems as item, i (item.id)}
 			<li class="itemcard item-in" class:open={openId === item.id} data-item={item.id}>
 				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions, a11y_no_noninteractive_element_interactions -->
-				<article class="card" onclick={(e) => onCardClick(e, item)}>
+				<article class="card" onclick={(e) => onCardClick(e, item)} oncontextmenu={(e) => openAdminMenu(e, item)}>
 					<div class="row1">
 						<ItemTile title={item.title} url={item.url} />
 						<div class="txt">
@@ -478,6 +526,26 @@
 			oncancel={() => (confirmState = null)}
 		/>
 	{/if}
+
+	{#if adminMenu}
+		<AdminItemMenu
+			x={adminMenu.x}
+			y={adminMenu.y}
+			onedit={startAdminEdit}
+			onregenerate={() => startAdminRegenerate(false)}
+			onregenerateName={() => startAdminRegenerate(true)}
+			onclose={() => (adminMenu = null)}
+		/>
+	{/if}
+
+	{#if adminEdit}
+		<AdminItemDialog
+			item={adminEdit}
+			onclose={() => (adminEdit = null)}
+			onsaved={() => void load()}
+			onerror={(m) => (notice = m)}
+		/>
+	{/if}
 </div>
 
 <style>
@@ -505,6 +573,16 @@
 		color: var(--muted);
 		font-size: 0.88rem;
 		line-height: 1.5;
+	}
+	.admin-notice {
+		margin: 0 0 0.75rem;
+		padding: 0.5rem 0.75rem;
+		border-radius: 12px;
+		background: color-mix(in srgb, var(--acc) 12%, var(--surface));
+		border: 1px solid color-mix(in srgb, var(--acc) 30%, var(--line));
+		color: var(--ink);
+		font-size: 0.85rem;
+		font-weight: 600;
 	}
 	.pending-badge {
 		margin-top: 0.65rem;

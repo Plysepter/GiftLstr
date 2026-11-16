@@ -30,11 +30,20 @@ const mocks = vi.hoisted(() => {
     userStore: store(null),
     loadedStore: store(false),
     copyToClipboard: vi.fn<(text: string) => Promise<void>>(() => Promise.resolve()),
+    invalidateMetadata: vi.fn(),
     seasonResult: { kind: "none", days: 0, label: "" },
   };
 });
 
 vi.mock("../lib/api.js", () => ({ api: mocks.api }));
+vi.mock("../lib/metadata.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/metadata.js")>();
+  return {
+    ...actual,
+    getMetadata: () => Promise.resolve(null),
+    invalidateMetadata: mocks.invalidateMetadata,
+  };
+});
 vi.mock("../lib/auth.js", () => ({
   user: mocks.userStore,
   loaded: mocks.loadedStore,
@@ -105,6 +114,7 @@ async function flush(): Promise<void> {
 beforeEach(() => {
   mocks.api.mockReset();
   mocks.copyToClipboard.mockReset();
+  mocks.invalidateMetadata.mockReset();
   mocks.seasonResult = { kind: "none", days: 0, label: "" };
   mocks.userStore.set(ADA);
 });
@@ -627,5 +637,87 @@ describe("UserList spending tracking", () => {
     expect(container.querySelector(".spend-pill")).toBeNull();
     expect(screen.queryByText("$0.00")).toBeNull();
     expect(screen.queryByLabelText("Price for Mug")).toBeNull();
+  });
+});
+
+describe("UserList admin item editing", () => {
+  function ownerList(): UserListResponse {
+    return {
+      user: OWNER,
+      items: [mkItem({ id: "i1", title: "Mug", url: "https://example.com/mug" })],
+      isOwner: false,
+    };
+  }
+
+  function withAdmin(path: string): Promise<unknown> {
+    return Promise.resolve(path.includes("/api/admin/items/") ? { ok: true } : ownerList());
+  }
+
+  async function rightClickCard(container: HTMLElement): Promise<void> {
+    const card = container.querySelector("article.card") as HTMLElement;
+    await fireEvent.contextMenu(card);
+  }
+
+  it("opens the admin menu on right-click for an admin", async () => {
+    mocks.api.mockImplementation(() => Promise.resolve(ownerList()));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    await rightClickCard(container);
+    expect(screen.getByRole("menu", { name: "Item actions" })).toBeTruthy();
+  });
+
+  it("does not open the admin menu for a non-admin", async () => {
+    mocks.userStore.set(PLEB);
+    mocks.api.mockImplementation(() => Promise.resolve(ownerList()));
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    await rightClickCard(container);
+    expect(screen.queryByRole("menu", { name: "Item actions" })).toBeNull();
+  });
+
+  it("regenerates a preview through the admin endpoint", async () => {
+    mocks.api.mockImplementation(withAdmin);
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    await rightClickCard(container);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Regenerate preview" }));
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/admin/items/i1", {
+      method: "PATCH",
+      body: { regenerate: true, updateName: false },
+    });
+    expect(mocks.invalidateMetadata).toHaveBeenCalledWith("https://example.com/mug");
+  });
+
+  it("opens the edit dialog and saves through the admin endpoint", async () => {
+    mocks.api.mockImplementation(withAdmin);
+    const { container } = render(UserList, { userId: "u7" });
+    await flush();
+
+    await rightClickCard(container);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit item…" }));
+    await flush();
+
+    fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Renamed" } });
+    const form = screen
+      .getByRole("button", { name: "Save changes" })
+      .closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
+    await flush();
+
+    expect(mocks.api).toHaveBeenCalledWith("/api/admin/items/i1", {
+      method: "PATCH",
+      body: {
+        title: "Renamed",
+        url: "https://example.com/mug",
+        notes: "",
+        regenerate: false,
+        updateName: false,
+      },
+    });
   });
 });

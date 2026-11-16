@@ -86,6 +86,7 @@ func registerAPI(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/admin/users/{id}", rl.rateLimit(admin(handleAdminDeleteUser)))
 	mux.HandleFunc("POST /api/admin/users/{id}/archive", rl.rateLimit(admin(handleAdminForceArchive)))
 	mux.HandleFunc("DELETE /api/admin/users/{id}/list", rl.rateLimit(admin(handleAdminHardDelete)))
+	mux.HandleFunc("PATCH /api/admin/items/{id}", rl.rateLimit(admin(handleAdminEditItem)))
 	mux.HandleFunc("PUT /api/connections", rl.rateLimit(admin(handleSetConnection)))
 	mux.HandleFunc("PUT /api/connect/share", rl.rateLimit(auth(handleSetShareEnabled)))
 	mux.HandleFunc("POST /api/connect/accept", rl.rateLimitStrict(auth(handleAcceptShareCode)))
@@ -1623,13 +1624,159 @@ func handleMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upsert cache (refresh TTL).
+	upsertMetadataCache(raw, meta)
+
+	writeJSON(w, 200, meta)
+}
+
+// upsertMetadataCache writes a freshly fetched preview into the cache, creating
+// the row or refreshing its values and TTL.
+func upsertMetadataCache(raw string, meta pageMetadata) {
 	if _, err := db.Exec(`INSERT INTO metadata_cache (url, title, description, image, fetched_at) VALUES (?, ?, ?, ?, datetime('now'))
 		ON CONFLICT(url) DO UPDATE SET title=excluded.title, description=excluded.description, image=excluded.image, fetched_at=excluded.fetched_at`,
 		raw, meta.Title, meta.Description, meta.Image); err != nil {
 		log.Printf("metadata cache upsert: %v", err)
 	}
+}
 
-	writeJSON(w, 200, meta)
+// adminEditItemResponse is returned by handleAdminEditItem. Metadata is the
+// freshly fetched preview when a refresh was requested; MetadataError explains
+// why a requested refresh could not be completed (the text edits still apply).
+type adminEditItemResponse struct {
+	OK            bool          `json:"ok"`
+	Metadata      *pageMetadata `json:"metadata,omitempty"`
+	MetadataError string        `json:"metadataError,omitempty"`
+}
+
+// handleAdminEditItem lets an admin edit the text of any item on a live list
+// they can open, and optionally force a fresh link-preview fetch.
+//
+// Unlike the owner's own edit endpoint this is keyed only by item id, so it can
+// reach items on other people's lists. It deliberately stops at the same
+// boundary the admin UI does: the list must be live and public (not archived,
+// not a private list), and a private idea authored by someone else is refused.
+//
+// regenerate forces a metadata lookup that bypasses the cache TTL; updateName
+// additionally replaces the item's name with the freshly fetched page title.
+// A failed refresh never discards the text edits: the response carries
+// metadataError instead.
+func handleAdminEditItem(w http.ResponseWriter, r *http.Request) {
+	caller := userFrom(r)
+	itemID, err := pathID(r, "id")
+	if err != nil {
+		fail(w, 400, "bad id")
+		return
+	}
+	var req struct {
+		Title      *string `json:"title"`
+		URL        *string `json:"url"`
+		Notes      *string `json:"notes"`
+		Regenerate bool    `json:"regenerate"`
+		UpdateName bool    `json:"updateName"`
+	}
+	if err := decode(w, r, &req); err != nil {
+		fail(w, 400, "bad request")
+		return
+	}
+
+	var (
+		title, itemURL, notes, visibility, createdBy string
+		archivedAt                                   sql.NullString
+		isPrivate                                    int
+	)
+	err = db.QueryRow(`SELECT i.title, i.url, i.notes, i.visibility, i.created_by_id, l.archived_at, l.is_private
+		FROM items i JOIN lists l ON l.id = i.list_id WHERE i.id = ?`, itemID).
+		Scan(&title, &itemURL, &notes, &visibility, &createdBy, &archivedAt, &isPrivate)
+	if err != nil {
+		fail(w, 404, "item not found")
+		return
+	}
+	if archivedAt.Valid {
+		fail(w, 400, "item is in an archived list")
+		return
+	}
+	if isPrivate == 1 {
+		fail(w, 400, "item is in a private list")
+		return
+	}
+	if visibility == "private" && createdBy != caller.ID {
+		fail(w, 403, "cannot edit another user's private idea")
+		return
+	}
+
+	titleSet, urlSet, notesSet := false, false, false
+	if req.Title != nil {
+		t := strings.TrimSpace(*req.Title)
+		if t == "" {
+			fail(w, 400, "title cannot be empty")
+			return
+		}
+		title, titleSet = t, true
+	}
+	if req.URL != nil {
+		u := strings.TrimSpace(*req.URL)
+		if !validItemURL(u) {
+			fail(w, 400, "url must be an absolute http(s) link")
+			return
+		}
+		itemURL, urlSet = canonicalAmazonURL(r.Context(), u), true
+	}
+	if req.Notes != nil {
+		notes, notesSet = strings.TrimSpace(*req.Notes), true
+	}
+
+	// Force-refresh the preview first so "update name from page" can fold the
+	// fresh title into the same UPDATE.
+	var (
+		refreshed  *pageMetadata
+		refreshErr string
+	)
+	if req.Regenerate || req.UpdateName {
+		switch {
+		case itemURL == "":
+			refreshErr = "item has no link to fetch"
+		default:
+			if u, perr := url.Parse(itemURL); perr != nil || !isPublicHost(r.Context(), u) {
+				refreshErr = "host is not reachable"
+				break
+			}
+			meta, ferr := fetchPageMetadata(r.Context(), itemURL)
+			if ferr != nil {
+				refreshErr = ferr.Error()
+				break
+			}
+			upsertMetadataCache(itemURL, meta)
+			refreshed = &meta
+			if req.UpdateName && strings.TrimSpace(meta.Title) != "" {
+				title, titleSet = strings.TrimSpace(meta.Title), true
+			}
+		}
+	}
+
+	sets := []string{}
+	args := []any{}
+	if titleSet {
+		sets = append(sets, "title = ?")
+		args = append(args, title)
+	}
+	if urlSet {
+		sets = append(sets, "url = ?")
+		args = append(args, itemURL)
+	}
+	if notesSet {
+		sets = append(sets, "notes = ?")
+		args = append(args, notes)
+	}
+	if len(sets) > 0 {
+		args = append(args, itemID)
+		if _, err := db.Exec(`UPDATE items SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...); err != nil {
+			log.Printf("admin edit item: %v", err)
+			fail(w, 500, "update failed")
+			return
+		}
+	}
+
+	writeJSON(w, 200, adminEditItemResponse{OK: true, Metadata: refreshed, MetadataError: refreshErr})
 }
 
 // maxListItems caps how many active (non-removed) items a list may hold so
