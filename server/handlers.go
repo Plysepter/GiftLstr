@@ -1036,9 +1036,12 @@ func (d ssrfDialer) DialContext(ctx context.Context, network, addr string) (net.
 var fetchClient = &http.Client{
 	Timeout: 5 * time.Second,
 	Transport: &http.Transport{
-		DialContext:     ssrfDialer{}.DialContext,
-		MaxIdleConns:    10,
-		IdleConnTimeout: 30 * time.Second,
+		DialContext: ssrfDialer{}.DialContext,
+		// Match net/http's default transport: negotiate HTTP/2 over TLS. Some
+		// hosts only serve their preview tags (or serve them correctly) over h2.
+		ForceAttemptHTTP2: true,
+		MaxIdleConns:      10,
+		IdleConnTimeout:   30 * time.Second,
 	},
 }
 
@@ -1049,11 +1052,21 @@ type pageMetadata struct {
 	Image       string `json:"image"`
 }
 
+// metaTagRe matches the <meta> tags that carry a page preview. It accepts
+// property (Open Graph), name (Twitter cards and plain descriptions), and
+// itemprop (schema.org microdata, e.g. itemprop="image").
 var metaTagRe = regexp.MustCompile(
-	`(?is)<meta[^>]+(?:property|name)=["'](og:title|og:description|og:image|twitter:title|twitter:description|twitter:image|description)["'][^>]*>`)
+	`(?is)<meta[^>]+(?:property|name|itemprop)=["'](og:title|og:description|og:image|og:image:url|og:image:secure_url|twitter:title|twitter:description|twitter:image|twitter:image:src|description|image)["'][^>]*>`)
 
 var metaContentRe = regexp.MustCompile(`(?is)content\s*=\s*["'](.*?)["']`)
 var titleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
+// linkImageSrcRe matches the legacy <link rel="image_src" href="..."> preview
+// hint that some older sites still emit instead of og:image.
+var (
+	linkImageSrcRe = regexp.MustCompile(`(?is)<link[^>]+rel=["']image_src["'][^>]*>`)
+	linkHrefRe     = regexp.MustCompile(`(?is)href\s*=\s*["'](.*?)["']`)
+)
 
 const metadataTTL = 30 * 24 * time.Hour
 
@@ -1120,6 +1133,10 @@ const (
 	// but serves the real product page to crawlers, because that is how link
 	// previews are meant to be fetched. Identify honestly as our own bot.
 	amazonBotUA = "Mozilla/5.0 (compatible; GiftLstrBot/1.0; +https://github.com/Plysepter/GiftLstr)"
+	// socialCrawlerUA is a second-attempt identity for sites that only emit
+	// Open Graph tags to the crawlers that build link previews (Reddit, TikTok,
+	// Twitch, ...). It is used only when the browser fetch yields no image.
+	socialCrawlerUA = "Twitterbot/1.0"
 )
 
 // metadataUserAgent picks the crawler identity used for a metadata lookup.
@@ -1405,36 +1422,48 @@ func augmentAmazonMetadata(ctx context.Context, meta *pageMetadata, pageURL *url
 	}
 }
 
-func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
+// fetchPage retrieves raw with the given User-Agent and returns the decoded
+// body together with the URL it finally landed on after any redirects.
+func fetchPage(ctx context.Context, raw, ua string) (string, *url.URL, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
 	if err != nil {
-		return pageMetadata{}, err
+		return "", nil, err
 	}
-	rawURL, _ := url.Parse(raw)
-	// Look like a browser for ordinary sites: many reject unknown crawlers
-	// outright, and social metadata is exactly what browsers get served.
-	// Amazon is the exception — it only serves product data to crawlers.
-	req.Header.Set("User-Agent", metadataUserAgent(rawURL))
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-CA,en-US;q=0.9,en;q=0.8")
 	resp, err := fetchClient.Do(req)
 	if err != nil {
-		return pageMetadata{}, err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return pageMetadata{}, fmt.Errorf("fetch failed with status %d", resp.StatusCode)
+		return "", nil, fmt.Errorf("fetch failed with status %d", resp.StatusCode)
 	}
-	ct := resp.Header.Get("Content-Type")
-	if ct != "" && !strings.Contains(strings.ToLower(ct), "text/html") {
-		return pageMetadata{}, fmt.Errorf("url does not return html")
+	if ct := resp.Header.Get("Content-Type"); ct != "" && !isHTMLContentType(ct) {
+		return "", nil, fmt.Errorf("url does not return html")
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return pageMetadata{}, err
+		return "", nil, err
 	}
-	doc := string(body)
-	meta := pageMetadata{URL: raw}
+	return string(body), resp.Request.URL, nil
+}
+
+// isHTMLContentType reports whether a Content-Type header describes an HTML
+// document. application/xhtml+xml is accepted because we advertise it in
+// Accept and some sites serve it verbatim.
+func isHTMLContentType(ct string) bool {
+	ct = strings.ToLower(ct)
+	return strings.Contains(ct, "text/html") || strings.Contains(ct, "application/xhtml+xml")
+}
+
+// parseMetadata extracts Open Graph, Twitter card, and microdata previews from
+// an HTML document. Relative image references resolve against baseURL, which
+// must be the post-redirect URL so they point at the host that actually served
+// the document.
+func parseMetadata(doc, baseURL string) pageMetadata {
+	meta := pageMetadata{}
 	for _, m := range metaTagRe.FindAllStringSubmatch(doc, -1) {
 		c := metaContentRe.FindStringSubmatch(m[0])
 		if c == nil {
@@ -1450,19 +1479,83 @@ func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
 			if meta.Description == "" {
 				meta.Description = val
 			}
-		case "og:image", "twitter:image":
+		case "og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src", "image":
 			if meta.Image == "" {
-				meta.Image = normalizeImageURL(val, raw)
+				meta.Image = normalizeImageURL(val, baseURL)
 			}
 		}
 	}
-	if ms := titleRe.FindStringSubmatch(doc); ms != nil && meta.Title == "" {
-		meta.Title = strings.TrimSpace(html.UnescapeString(ms[1]))
+	if meta.Image == "" {
+		if tag := linkImageSrcRe.FindString(doc); tag != "" {
+			if h := linkHrefRe.FindStringSubmatch(tag); h != nil {
+				meta.Image = normalizeImageURL(html.UnescapeString(h[1]), baseURL)
+			}
+		}
 	}
-	if finalURL := resp.Request.URL; finalURL != nil && amazonHost(finalURL.Hostname()) {
+	if meta.Title == "" {
+		if ms := titleRe.FindStringSubmatch(doc); ms != nil {
+			meta.Title = strings.TrimSpace(html.UnescapeString(ms[1]))
+		}
+	}
+	return meta
+}
+
+// mergePreview fills any field the primary result lacks from the fallback.
+func mergePreview(primary, fallback pageMetadata) pageMetadata {
+	if primary.Title == "" {
+		primary.Title = fallback.Title
+	}
+	if primary.Description == "" {
+		primary.Description = fallback.Description
+	}
+	if primary.Image == "" {
+		primary.Image = fallback.Image
+	}
+	return primary
+}
+
+// fetchPageMetadata fetches Open Graph metadata for a public http(s) URL.
+//
+// Ordinary sites publish preview tags to browser traffic, so that is the first
+// attempt. Some (Reddit, TikTok, Twitch, ...) only emit them to the crawlers
+// that build link previews, so when the browser fetch comes back with no image
+// we retry once as one. Amazon is handled separately: it serves product data
+// only to crawlers, never browsers.
+func fetchPageMetadata(ctx context.Context, raw string) (pageMetadata, error) {
+	rawURL, _ := url.Parse(raw)
+	doc, finalURL, err := fetchPage(ctx, raw, metadataUserAgent(rawURL))
+	if err != nil {
+		return pageMetadata{}, err
+	}
+	base := raw
+	if finalURL != nil {
+		base = finalURL.String()
+	}
+	meta := parseMetadata(doc, base)
+	meta.URL = raw
+
+	switch {
+	case finalURL != nil && amazonHost(finalURL.Hostname()):
 		augmentAmazonMetadata(ctx, &meta, finalURL, doc)
-	} else if rawURL != nil && amazonHost(rawURL.Hostname()) {
+	case rawURL != nil && amazonHost(rawURL.Hostname()):
 		augmentAmazonMetadata(ctx, &meta, rawURL, doc)
+	case meta.Image == "" || meta.Title == "":
+		// A browser fetch with no image usually means a JavaScript shell, so
+		// prefer the crawler-served copy; otherwise keep the browser copy and
+		// only fill its gaps.
+		if doc2, final2, err2 := fetchPage(ctx, raw, socialCrawlerUA); err2 == nil {
+			base2 := raw
+			if final2 != nil {
+				base2 = final2.String()
+			}
+			alt := parseMetadata(doc2, base2)
+			primary, fallback := meta, alt
+			if meta.Image == "" {
+				primary, fallback = alt, meta
+			}
+			meta = mergePreview(primary, fallback)
+			meta.URL = raw
+		}
 	}
 	return meta, nil
 }

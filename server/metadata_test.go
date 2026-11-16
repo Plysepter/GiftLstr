@@ -19,6 +19,14 @@ import (
 // using realistic URLs while still being hermetic.
 func withTestServer(t *testing.T, handler http.Handler) {
 	t.Helper()
+	withTestServerURL(t, handler)
+}
+
+// withTestServerURL is like withTestServer but also returns the fake server's
+// base URL, so tests can assert on values derived from the post-redirect URL
+// (which rewriteTransport rewrites to this server).
+func withTestServerURL(t *testing.T, handler http.Handler) string {
+	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	orig := fetchClient
@@ -27,6 +35,7 @@ func withTestServer(t *testing.T, handler http.Handler) {
 		Timeout:   5 * time.Second,
 	}
 	t.Cleanup(func() { fetchClient = orig })
+	return srv.URL
 }
 
 type rewriteTransport struct{ target string }
@@ -548,5 +557,129 @@ func TestFetchPageMetadataNormalizesImageURL(t *testing.T) {
 	want := "https://sonofoak.com/cdn/shop/files/black_friday.jpg?v=1"
 	if meta.Image != want {
 		t.Errorf("image = %q, want %q", meta.Image, want)
+	}
+}
+
+func TestFetchPageMetadataAcceptsXHTML(t *testing.T) {
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xhtml+xml; charset=utf-8")
+		_, _ = io.WriteString(w, `<html><head>
+			<title>XHTML Page</title>
+			<meta property="og:image" content="https://img.example.com/x.png"/>
+		</head></html>`)
+	}))
+
+	meta, err := fetchPageMetadata(context.Background(), "https://example.com/page")
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if meta.Title != "XHTML Page" {
+		t.Errorf("title = %q, want XHTML Page", meta.Title)
+	}
+	if meta.Image != "https://img.example.com/x.png" {
+		t.Errorf("image = %q", meta.Image)
+	}
+}
+
+func TestFetchPageMetadataReadsImageVariants(t *testing.T) {
+	tests := []struct{ name, markup, want string }{
+		{"twitter image src", `<meta name="twitter:image:src" content="https://img.example.com/t.png">`, "https://img.example.com/t.png"},
+		{"og secure url", `<meta property="og:image:secure_url" content="https://img.example.com/s.png">`, "https://img.example.com/s.png"},
+		{"itemprop image", `<meta itemprop="image" content="https://img.example.com/i.png">`, "https://img.example.com/i.png"},
+		{"link image_src", `<link rel="image_src" href="https://img.example.com/l.png">`, "https://img.example.com/l.png"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `<html><head><meta property="og:title" content="T">` + tc.markup + `</head></html>`
+			withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, body)
+			}))
+			meta, err := fetchPageMetadata(context.Background(), "https://example.com/thing")
+			if err != nil {
+				t.Fatalf("fetchPageMetadata: %v", err)
+			}
+			if meta.Image != tc.want {
+				t.Errorf("image = %q, want %q", meta.Image, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchPageMetadataResolvesImageAgainstFinalURL(t *testing.T) {
+	base := withTestServerURL(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "https://cdn.example.com/landing", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, `<html><head>
+			<meta property="og:title" content="Landing">
+			<meta property="og:image" content="/img/hero.png">
+		</head></html>`)
+	}))
+
+	meta, err := fetchPageMetadata(context.Background(), "https://example.com/start")
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	// rewriteTransport sends the redirect to the fake server, so the post-redirect
+	// URL is the fake server's origin. The relative image must resolve against
+	// that origin, not the original example.com host (which would yield
+	// https://example.com/img/hero.png).
+	want := "https://" + strings.TrimPrefix(base, "http://") + "/img/hero.png"
+	if meta.Image != want {
+		t.Errorf("image = %q, want %q (resolved against the post-redirect URL)", meta.Image, want)
+	}
+}
+
+func TestFetchPageMetadataFallsBackToSocialCrawlerUA(t *testing.T) {
+	var crawlerHits int
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if strings.Contains(r.Header.Get("User-Agent"), "Twitterbot") {
+			crawlerHits++
+			_, _ = io.WriteString(w, `<html><head>
+				<meta property="og:title" content="Crawler Title">
+				<meta property="og:image" content="https://img.example.com/c.png">
+			</head></html>`)
+			return
+		}
+		_, _ = io.WriteString(w, `<html><head><title>Shell</title></head><body>app</body></html>`)
+	}))
+
+	meta, err := fetchPageMetadata(context.Background(), "https://example.com/app")
+	if err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if crawlerHits != 1 {
+		t.Errorf("crawler UA used %d times, want 1", crawlerHits)
+	}
+	if meta.Title != "Crawler Title" {
+		t.Errorf("title = %q, want Crawler Title", meta.Title)
+	}
+	if meta.Image != "https://img.example.com/c.png" {
+		t.Errorf("image = %q, want crawler image", meta.Image)
+	}
+}
+
+func TestFetchPageMetadataSkipsCrawlerRetryWhenComplete(t *testing.T) {
+	var crawlerHits int
+	withTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		if strings.Contains(r.Header.Get("User-Agent"), "Twitterbot") {
+			crawlerHits++
+		}
+		_, _ = io.WriteString(w, `<html><head>
+			<meta property="og:title" content="Complete">
+			<meta property="og:image" content="https://img.example.com/c.png">
+		</head></html>`)
+	}))
+
+	if _, err := fetchPageMetadata(context.Background(), "https://example.com/full"); err != nil {
+		t.Fatalf("fetchPageMetadata: %v", err)
+	}
+	if crawlerHits != 0 {
+		t.Errorf("crawler UA used %d times, want 0 when the browser fetch is complete", crawlerHits)
 	}
 }
