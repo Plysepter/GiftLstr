@@ -1,11 +1,14 @@
 # GiftLstr
 
-GiftLstr is a wishlist app for people who never know what to ask for (or buy). Keep a list of gift ideas with links and notes, share it with friends and family, and let them "claim" items so nobody buys the same thing twice. The list resets automatically after Christmas and after your birthday.
+GiftLstr is a wishlist app for you to share with family and friends. Keep a list of gift ideas with links and notes and let others "claim" items so nobody buys the same thing twice. The list resets automatically after Christmas and after your birthday.
 
 ## Features
 
 - Per-user gift lists with title, URL, and notes (URLs get link previews)
+- Private lists: Keep a list of ideas for others that only you see
+- Suggested list: Promote private ideas to be shared with others except the acceptee. Crowd source gift ideas!
 - Claims: connected people can reserve an item so gifts aren't duplicated
+- Optional spend tracking: Keep track of per person spending for each event 
 - Connections: a share code lets friends/family see and claim from your list
 - Automatic archiving: after Christmas/birthday, the active list is archived and a fresh one is created (unclaimed items carry over)
 - Optional automatic SQLite backups (daily with retention)
@@ -214,25 +217,11 @@ docker compose -f docker/giftlstr/docker-compose.demo.yml up -d
 Use `--build` to rebuild from source instead, or override the image names with
 `MAIN_IMAGE` / `DEMO_IMAGE` when calling the script.
 
-### Deploying a release with Arcane
+### Deploying a release
 
-The release tags are local-only: `giftlstr-giftlstr:latest` exists on the host
-only after `docker load` (or an upload on Arcane's **Images** page). They are
-not published to a registry, so anything that pulls by name fails with
-`pull access denied for giftlstr-giftlstr`.
+The release tags are local-only. As the images are not currently pushed to any docker repository, you will need to manually deploy the image. Depending onyour hosting solution, you may need to disable image pulling for the app to deploy successfully.
 
-- Load the archive in Arcane under **Images → Upload Image**, then use
-  **Deploy → Up** rather than **Redeploy**. If the environment's default deploy
-  pull policy is "always pull", set the project's deploy **Pull policy** to
-  **Never pull**.
-- The compose files set `pull_policy: never` on the app services for this
-  reason, so Compose does not try to pull the local tags; `up --build` still
-  rebuilds from source.
-- Arcane's **Redeploy** is defined as "pull the latest images and restart". It
-  may still attempt a registry pull for these local tags (and log a warning)
-  before falling back to the loaded image. To use it without any pull attempt,
-  publish the images to a registry, change the `image:` references to that
-  registry, and remove the `pull_policy: never` override.
+The release tags are local-only: `giftlstr-giftlstr:latest` exists on the host only after `docker load` (or an upload on Arcane's **Images** page). They are not published to a registry, so anything that pulls by name fails with `pull access denied for giftlstr-giftlstr`.
 
 The demo image is built with `VITE_E2E=true`, which bundles the seeded demo
 accounts and e2e token provider — keep it out of production.
